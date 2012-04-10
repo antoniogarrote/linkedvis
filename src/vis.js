@@ -1,3 +1,5 @@
+var rdfstore = require('rdfstore');
+
 /**
  * Utilities
  */
@@ -59,6 +61,34 @@ Utils.findMaxMin = function(nodes, property) {
 	}
     }
     return [max,min];
+};
+
+Utils.loadElementsIntoContext = function(elementsData, where, context) {
+    var graph = context[where];
+
+    for(var i=0; i<elementsData.length; i++) {
+	if(elementsData[i].toNT != null)
+	    graph.load(elementsData[i].toNT(), "text/n3", function(){});
+    }
+};
+
+Utils.genId = function(context) {
+    return "lvShapeID"+(context.idGen++);
+};
+
+Utils.genLayerId = function(context, layer) {
+    var layerCounter;
+
+    if(layer.id != null) {
+	layerCounter = context.layerCounter[layer.id] || 0
+	layerCounter++;
+	context.layerCounter[layer.id] = layerCounter;
+	layer.id = layer.id + "_" + layerCounter;
+    } else {
+	context.totalLayers++;
+	layerCounter = context.totalLayers;
+	layer.id = "layerID"+layerCounter;
+    }
 };
 
 /**
@@ -210,10 +240,17 @@ var Layer = function(struct, graph, bounds) {
     this.struct = struct;
     this.graph = graph;
     this.bounds = bounds;
+    this.bindings = {};
+    this.bindingsKeys = {};
 };
 
-Layer.prototype.bind = function(bindings) {
+Layer.prototype.bind = function(type, bindings) {
+    if(bindings == null) {
+	bindings = type;
+	type = 'nodes';
+    }
     var acum = {}, val, keys = [], tmp;
+
     for(var p in bindings) {
 	val = bindings[p];
 	if(val != null)  {
@@ -238,10 +275,11 @@ Layer.prototype.bind = function(bindings) {
 
 	}
     }
-    this.bindings = acum;
-    this.bindingsKeys = keys;
+    this.bindings[type] = acum;
+    this.bindingsKeys[type] = keys;
     return this;
 };
+
 
 Layer.prototype.layout = function(layout) {
     this.layout = layout;
@@ -249,7 +287,12 @@ Layer.prototype.layout = function(layout) {
 };
 
 
-Layer.prototype.resolveProps = function(elements, cb) {
+Layer.prototype.resolveProps = function(type, elements, context) {
+    // Throw a menaningful error
+    if(this.bindingsKeys[type] == null) 
+	throw "Cannot find bindings for elements of type '"+type+"'";
+
+    console.log("SOLVING PROPS FOR "+elements.length);
     var that = this, shape, floop, resolved, rdfProps;
     var shapes = [], key, prop;
     for(var i=0; i<elements.length; i++) {
@@ -259,10 +302,17 @@ Layer.prototype.resolveProps = function(elements, cb) {
 	    elements[i] = elements[i]['node'];
 	    elements[i].treeNode = tmp;
 	}
+	//if(elements[i]['$type'] === 'graphnode') {
+	//    var tmp = elements[i];
+	//    elements[i] = elements[i]['node'];
+	//    elements[i].graphNode = tmp;
+	//}
 
 	if(elements[i]['$type'] && elements[i]['$type'] === 'group') {
 	    // @TODO: use layer ID to generate an unique URI for the shape
-	    shape = new Shape({'value':'http://linkedvis.org/layers/ids#'+elements[i]['id']});
+	    shape = new Shape();
+	    if(this.bindings[type]['id'] == null)
+		shape.id = {'value':Utils.genId(shape, context)}
 	    shape.isGroup = true;
 	    shape.graph = elements[i];
 	    shape.graph.rdf = that.graph.rdf;
@@ -273,12 +323,13 @@ Layer.prototype.resolveProps = function(elements, cb) {
 		    shape.rdfProps[p] = shape['graph'][p];
 	    }
 
+
 	    console.log("RDF PROPS NOW");
 	    console.log(shape.rdfProps);
 
-	    for(var j=0; j<that.bindingsKeys.length; j++) {
-		key = that.bindingsKeys[j];
-		prop = that.bindings[key];
+	    for(var j=0; j<that.bindingsKeys[type].length; j++) {
+		key = that.bindingsKeys[type][j];
+		prop = that.bindings[type][key];
 		if(prop['rdfProperty'] != null && prop['rdfProperty'].indexOf("lv:") != 0) {
 		    var aggregator = prop['aggregate'] || 'lv:average';
 		    resolved = (that.graph.rdf.resolve(prop['rdfProperty']) || prop['rdfProperty']);
@@ -310,18 +361,21 @@ Layer.prototype.resolveProps = function(elements, cb) {
 	    shapes.push(shape);
 	} else {
 	    shape = new Shape(elements[i].nodeURI);
+	    if(this.bindings[type]['id'] == null)
+		shape.id = {'value':Utils.genId(shape, context)}
+	    shape.id = {'value':Utils.genId(context)}
 	    shape.graph = elements[i];
 	    shape.isGroup = false;
 	    shape.graph.rdf = that.graph.rdf;
 	    shape.rdfProps = {};
-	    for(var p in shape['graph']) {
+	    for(var p in shape.graph) {
 		if(p.indexOf("lv:") !== -1)
-		    shape.rdfProps[p] = shape['graph'][p];
+		    shape.rdfProps[p] = shape.graph[p];
 	    }
 
-	    for(var j=0; j<that.bindingsKeys.length; j++) {
-		key = that.bindingsKeys[j];
-		prop = that.bindings[key];
+	    for(var j=0; j<that.bindingsKeys[type].length; j++) {
+		key = that.bindingsKeys[type][j];
+		prop = that.bindings[type][key];
 		if(prop['rdfProperty'] != null) {
 		    resolved = that.graph.rdf.resolve(prop['rdfProperty']) || prop['rdfProperty'];
 		    var match = shape.graph.match(null, resolved, null, 1).toArray();
@@ -337,23 +391,27 @@ Layer.prototype.resolveProps = function(elements, cb) {
     // Got all the shapes + associated RDF nodes data
     var scalesKeys = [];
     var regularKeys = [];
-    
-    for(i=0; i<that.bindingsKeys.length; i++) {
-	key = that.bindingsKeys[i];
-	prop = that.bindings[key];
+
+    for(i=0; i<that.bindingsKeys[type].length; i++) {
+	key = that.bindingsKeys[type][i];
+	prop = that.bindings[type][key];
 	if(prop['scale'] != null)
 	    scalesKeys.push(key);
 	else
 	    regularKeys.push(key);
     }
 
-    that.scales = that.processScales(scalesKeys, shapes, that.graph);
+    that.scales = that.processScales(type, scalesKeys, shapes, that.graph);
 
     for(j=0; j<shapes.length; j++) {
 	shape = shapes[j];
+	console.log("THE SHAPE");
+	console.log(shape);
 	for(i=0; i<regularKeys.length; i++) {
 	    key = regularKeys[i];
-	    prop = that.bindings[key];
+	    prop = that.bindings[type][key];
+	    console.log("KEY");
+	    console.log(key);
 	    if(prop['val'] != null) {
 		shape.setProp(key, prop['val']);
 	    } else if(prop['function']  != null) {
@@ -365,7 +423,7 @@ Layer.prototype.resolveProps = function(elements, cb) {
 	}
 	for(i=0; i<scalesKeys.length; i++) {
 	    key = scalesKeys[i];
-	    prop = that.bindings[key];
+	    prop = that.bindings[type][key];
 	    scale = that.scales[key];
 	    if(prop['val'] != null) {
 		shape.setProp(key, scale.apply(prop['val']));
@@ -378,69 +436,102 @@ Layer.prototype.resolveProps = function(elements, cb) {
 	}
     }
 
-    cb(shapes);
+
+    return shapes;
 };
 
-Layer.prototype.processScales = function(keys, shapes, graph) {
+Layer.prototype.processScales = function(type, keys, shapes, graph) {
     var scales = {}, key;
     for(var i=0; i<keys.length; i++) {
 	key = keys[i];
 	console.log("BUILDING SCALE");
-	scales[key] = this.layout.buildScale(key, this.bounds, this.bindings[key], shapes, graph)
+	console.log(shapes.length);
+	scales[key] = this.layout.buildScale(key, this.bounds, this.bindings[type][key], shapes, graph)
     }
 
     return scales;
 };
 
-Layer.prototype.render = function(doc,cb) {
+Layer.prototype.render = function(doc, context, cb) {
     var that = this;
-    this.struct.execute(this.graph, function(success, elements){
-	
-	// create additional layers to the computed data structure
-	that.layout.rearrange(elements, that.struct, that);
 
-	// Compute values and scales for the shapes and this layer
-	that.resolveProps(elements, function(shapes) {
+    var parentLayerId = this.layer;
+    Utils.genLayerId(context, this);
 
-	    // Compute positions
-	    var bounds = that.bounds;
-	    shapes = that.layout.position(bounds, shapes);
+    // XML SVG for the layer -> rendered as a SVG group, it makes it possible to add a meta element
+    doc = doc + "<g id='" + this.id + "' class='lv_layer'>";
 
-	    // Shape rendering
-	    for(var i=0; i<shapes.length; i++)
-		doc = shapes[i].render(doc);
+    this.struct.execute(this.graph, function(success, elementsData){
 
-	    var processStacked = function() {
-		// render additional layers at this level
-		if((this.layers || []).length > 0) {
-		    var nextLayer = this.layers.shift();
-		    nextLayer.layers = this.layers;
-		    nextLayer.render(function(success, doc) {
-			cb(success, doc);
-		    });
-		} else {
-		    // return result
-		    cb(true, doc);
-		}
-	    };
+	if(elementsData.constructor === 'Array')
+	    elementsData = {'nodes': elementsData};
 
-	    // render nested levels layers
-	    if(that.nested) {
-		Utils.repeat(0, shapes.length, function(k, env) {
-		    var floop = arguments.callee;
-		    setTimeout(function() {
-			that.nested.graph = shapes[env._i].graph;
-			that.nested.bounds = shapes[env._i].bounds;
-			that.nested.render(doc, function(success, nextDoc) {
-			    doc = nextDoc;
-			    k(floop, env);
-			});
-		    },0);
-		},processStacked);
+	var shapes = {}, tmpShapes;
+	for(var type in elementsData) {
+	    elements = elementsData[type];
+	    console.log("STRUCT RETURNS "+elements.length+" ELEMENTS");
+
+	    // Load elements in visualization data graph
+	    Utils.loadElementsIntoContext(elements, 'datagraph', context);
+
+	    // Create additional layers according to the computed data structure
+	    that.layout.rearrange(type,elements, that.struct, that, context);
+
+	    console.log("REARRANGED");
+
+	    // Compute values and scales for the shapes in this layer
+	    tmpShapes = that.resolveProps(type, elements, context);
+
+	    console.log("RESOLVED");
+
+	    shapes[type] = tmpShapes;
+	}
+
+	// Compute positions
+	var bounds = that.bounds;
+	shapes = that.layout.position(shapes, bounds, context);
+
+	// Shape rendering
+	for(var i=0; i<shapes.length; i++) {
+	    doc = shapes[i].render(doc, context);
+	}
+
+	var processStacked = function() {
+	    // Render additional layers at this level
+	    if((this.layers || []).length > 0) {
+		var nextLayer = this.layers.shift();
+		nextLayer.layers = this.layers;
+		nextLayer.id = parentLayerId;
+		nextLayer.render(doc, context, function(success, doc) {
+		    cb(success, doc);
+		});
 	    } else {
-		processStacked();
+		// closing SVG XML tag for the layer
+		doc = doc + "</g>";
+
+		// return result
+		cb(true, doc);
 	    }
-	});
+	};
+
+	// Render nested levels layers
+
+	if(that.nested) {
+	    Utils.repeat(0, shapes.length, function(k, env) {
+		var floop = arguments.callee;
+		setTimeout(function() {
+		    that.nested.graph = shapes[env._i].graph;
+		    that.nested.bounds = shapes[env._i].bounds;
+		    that.nested.id = that.id;
+		    that.nested.render(doc, context, function(success, nextDoc) {
+			doc = nextDoc;
+			k(floop, env);
+		    });
+		},0);
+	    },processStacked);
+	} else {
+	    processStacked();
+	}
     });
 };
 
@@ -456,20 +547,24 @@ var Shape = function(uri) {
 
 Shape.prototype.setProp = function(prop, value) {
     // TODO: check correct properties for this shape
-    if(prop === 'x' || prop === 'y' || prop === 'width' || prop === 'height' || prop === 'radius' || prop === 'offset' ||
-       prop === 'size') {
+    if(prop === 'x' || prop === 'y' || prop === 'width' || prop === 'height' || prop === 'radius' || prop === 'offset' || prop === 'x1' || prop === 'y1' || prop === 'x2' || prop === 'y2' || prop === 'size') {
 	this.positionBindings[prop] = parseFloat(value);
+    } else if(prop === 'id') {
+	this.id = value; // overwrite autoassigned ID
     } else {
 	this.properties[prop] = value;
     }
 };
 
-Shape.prototype.render = function(doc) {
+Shape.prototype.render = function(doc, context) {
     if(this.properties['shape'] === 'rect') {
 	doc = doc + "<"+(this.properties['shape'])+" ";
 
+
+	if(this.id != null && this.id.value != null)
+	    doc = doc + "id='"+this.id.value+"' ";
 	
-	if(this.uri != null)
+	if(this.uri != null && this.uri.value != null)
 	    doc = doc + "about='"+this.uri.value+"' ";
 
 	for(var prop in this.properties) {
@@ -480,14 +575,39 @@ Shape.prototype.render = function(doc) {
 	doc = this.renderPosition(doc);
 	doc = doc +">";
 
-	//if(this.rdfProps != null) 
-	// 	doc = doc + "<meta>"+this.buildRDF()+"</meta>";
+	if(this.rdfProps != null && this.graph.match) 
+	    doc = doc + "<meta>"+this.buildRDF(context)+"</meta>";
+
+	doc = doc + "</"+(this.properties['shape'])+">";
+    } else if(this.properties['shape'] === 'line') {
+	doc = doc + "<"+(this.properties['shape'])+" ";
+
+
+	if(this.id != null && this.id.value != null)
+	    doc = doc + "id='"+this.id.value+"' ";
+	
+	if(this.uri != null && this.uri.value != null)
+	    doc = doc + "about='"+this.uri.value+"' ";
+
+	for(var prop in this.properties) {
+	    if(prop != 'shape') {
+		doc = doc + prop + "='" + this.properties[prop] + "' ";
+	    };
+	}
+	doc = this.renderPosition(doc);
+	doc = doc +">";
+
+	if(this.rdfProps != null && this.graph.match) 
+	    doc = doc + "<meta>"+this.buildRDF(context)+"</meta>";
 
 	doc = doc + "</"+(this.properties['shape'])+">";
     } else if(this.properties['shape'] === 'text') {
 	doc = doc + "<"+(this.properties['shape'])+" ";
 
-	if(this.uri != null) 
+	if(this.id != null && this.id.value != null)
+	    doc = doc + "id='"+this.id.value+"' ";
+
+	if(this.uri != null && this.uri.value != null)
 	    doc = doc + "about='"+this.uri.value+"' ";
 
 	for(var prop in this.properties) {
@@ -500,14 +620,17 @@ Shape.prototype.render = function(doc) {
 
 	doc = doc + this.properties['content'];
 
-	//if(this.rdfProps != null) 
-	// 	doc = doc + "<meta>"+this.buildRDF()+"</meta>";
+	if(this.rdfProps != null && this.graph.match) 
+	    doc = doc + "<meta>"+this.buildRDF(context)+"</meta>";
 
 	doc = doc + "</"+(this.properties['shape'])+">";
     } else if(this.properties['shape'] === 'circle') {
 	doc = doc + "<"+(this.properties['shape'])+" ";
 
-	if(this.uri != null) 
+	if(this.id != null && this.id.value != null)
+	    doc = doc + "id='"+this.id.value+"' ";
+
+	if(this.uri != null && this.uri.value != null)
 	    doc = doc + "about='"+this.uri.value+"' ";
 
 	for(var prop in this.properties) {
@@ -518,14 +641,17 @@ Shape.prototype.render = function(doc) {
 	doc = this.renderPosition(doc);
 	doc = doc +">";
 
-	//if(this.rdfProps != null) 
-	// 	doc = doc + "<meta>"+this.buildRDF()+"</meta>";
+	if(this.rdfProps != null && this.graph.match) 
+	    doc = doc + "<meta>"+this.buildRDF(context)+"</meta>";
 
 	doc = doc + "</"+(this.properties['shape'])+">";
     } else if(this.properties['shape'] === 'path') {
 	doc = doc + "<"+(this.properties['shape'])+" ";
 
-	if(this.uri != null) 
+	if(this.id != null && this.id.value != null)
+	    doc = doc + "id='"+this.id.value+"' ";
+
+	if(this.uri != null && this.uri.value != null)
 	    doc = doc + "about='"+this.uri.value+"' ";
 
 	for(var prop in this.properties) {
@@ -536,17 +662,19 @@ Shape.prototype.render = function(doc) {
 	doc = this.renderPosition(doc);
 	doc = doc +">";
 
-	//if(this.rdfProps != null) 
-	// 	doc = doc + "<meta>"+this.buildRDF()+"</meta>";
+	if(this.rdfProps != null && this.graph.match) 
+	    doc = doc + "<meta>"+this.buildRDF(context)+"</meta>";
 
 	doc = doc + "</"+(this.properties['shape'])+">";
     }
     return doc;
 };
 
-Shape.prototype.buildRDF = function() {
+Shape.prototype.buildRDF = function(context) {
+    console.log("BUILDING RDF");
+    console.log(this);
+    console.log("==================");
     var ns = {}, shrinked, expanded, p;
-    
     var type = this.graph.match(null, "http://www.w3.org/1999/02/22-rdf-syntax-ns#type", null, 1).toArray();
 
     var rdf = "";
@@ -563,12 +691,12 @@ Shape.prototype.buildRDF = function() {
      	type = "rdf:Description";
     }
 
-    rdf = rdf + "<"+type+" rdf:about=\""+this.uri.value+"\">";
+    rdf = rdf + "<"+type+" rdf:about=\""+this.id.value+"\">";
     for(p in this.rdfProps) {
 	expanded = this.graph.rdf.resolve(p) || p;
 	expanded = expanded || p;
 	expanded = LinkedVis.shrink(expanded, ns);
-	rdf = rdf + "<"+expanded+">"+this.rdfProps[p]+"<"+expanded+">";
+	rdf = rdf + "<"+expanded+">"+this.rdfProps[p]+"</"+expanded+">";
     }
 
     var preamble = "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"";
@@ -600,6 +728,15 @@ Shape.prototype.renderPosition = function(doc) {
 	    doc = doc + " y='"+ this.bounds['y'] + "'";
 	if(this.bounds['height'] != null)
 	    doc = doc + " font-size='"+ this.bounds['height'] + "'";
+    } else if(this.properties['shape'] === 'line') {
+	if(this.bounds['x1'] != null)
+	    doc = doc + " x1='"+ this.bounds['x1'] + "'";
+	if(this.bounds['x2'] != null)
+	    doc = doc + " x2='"+ this.bounds['x2'] + "'";
+	if(this.bounds['y1'] != null)
+	    doc = doc + " y1='"+ this.bounds['y1'] + "'";
+	if(this.bounds['y2'] != null)
+	    doc = doc + " y2='"+ this.bounds['y2'] + "'";
     } else if(this.properties['shape'] === 'circle') {
 	if(this.bounds['x'] != null)
 	    doc = doc + " cx='"+ this.bounds['x'] + "'";
@@ -744,6 +881,9 @@ HorizontalLayout.prototype.buildScale = function(key, bounds, scale, shapes, gra
 	    var maxMin = Utils.findMaxMin(Utils.map(shapes, function(shape){ return shape.rdfProps; }), (graph.rdf.resolve(prop) || prop));
 	    var domain = maxMin[0] - maxMin[1];
 	    var marks = domain / 4.0;
+	    if(maxMin[1] - marks < 0)
+		marks = maxMin[1];
+
 	    if(scale['domainMax'] == null)
 		domainMax = maxMin[0] + marks;
 	    else 
@@ -834,7 +974,8 @@ HorizontalLayout.prototype.getRangeMax = function(key, bounds) {
     }
 };
 
-HorizontalLayout.prototype.position = function(bounds, shapes) {
+HorizontalLayout.prototype.position = function(shapes, bounds, context) {
+    shapes = shapes['nodes'];
     var perElement = (bounds['width'] || bounds['size']) / shapes.length;
     var x,y,shape, shapeBounds, height, width;
     var acum = [];
@@ -897,7 +1038,7 @@ HorizontalLayout.prototype.position = function(bounds, shapes) {
     return acum;
 };
 
-HorizontalLayout.prototype.rearrange = function(elements, struct, layer) {
+HorizontalLayout.prototype.rearrange = function(type, elements, struct, layer, context) {
     // nothing to do here
 };
 
@@ -906,6 +1047,8 @@ HorizontalLayout.prototype.rearrange = function(elements, struct, layer) {
 var VerticalLayout  = function(opts) {
     this.opts = opts || {};
 };
+
+
 // Registering the layout
 Layout.register('Vertical', VerticalLayout);
 
@@ -919,6 +1062,9 @@ VerticalLayout.prototype.buildScale = function(key, bounds, scale, shapes, graph
 	    var maxMin = Utils.findMaxMin(Utils.map(shapes, function(shape){ return shape.rdfProps; }), (graph.rdf.resolve(prop) || prop));
 	    var domain = maxMin[0] - maxMin[1];
 	    var marks = domain / 4.0;
+	    if(maxMin[1] - marks < 0)
+		marks = maxMin[1];
+
 	    if(scale['domainMax'] == null)
 		domainMax = maxMin[0] + marks;
 	    else 
@@ -1008,7 +1154,8 @@ VerticalLayout.prototype.getRangeMax = function(key, bounds) {
     }
 };
 
-VerticalLayout.prototype.position = function(bounds, shapes) {
+VerticalLayout.prototype.position = function(shapes, bounds, context) {
+    shapes = shapes['nodes'];
     var perElement = bounds['height'] / shapes.length;
     var x,y,shape, shapeBounds, height, width;
     var acum = [];
@@ -1073,7 +1220,7 @@ VerticalLayout.prototype.position = function(bounds, shapes) {
     return acum;
 };
 
-VerticalLayout.prototype.rearrange = function(elements, struct, layer) {
+VerticalLayout.prototype.rearrange = function(type, elements, struct, layer, context) {
     // nothing to do here
 };
 
@@ -1176,7 +1323,8 @@ CartesianLayout.prototype.getRangeMax = function(key, bounds) {
     }
 };
 
-CartesianLayout.prototype.position = function(bounds, shapes) {
+CartesianLayout.prototype.position = function(shapes, bounds, context) {
+    shapes = shapes['nodes'];
     var perElement = bounds['width'] / shapes.length;
     var x,y,shape, shapeBounds, height, width;
     var acum = [];
@@ -1213,7 +1361,7 @@ CartesianLayout.prototype.position = function(bounds, shapes) {
     return acum;
 };
 
-CartesianLayout.prototype.rearrange = function(elements, struct, layer) {
+CartesianLayout.prototype.rearrange = function(type, elements, struct, layer, context) {
     // nothing to do here
 };
 
@@ -1247,7 +1395,7 @@ TreeMapLayout.prototype.getRangeMax = function(key, bounds) {
     }
 };
 
-TreeMapLayout.prototype.position = function(bounds, shapes) {
+TreeMapLayout.prototype.position = function(shapes, bounds, context) {
     if(this.orientation === "horizontal") {
 	return new HorizontalLayout(this.opts).position(bounds, shapes);
     } else {
@@ -1255,7 +1403,7 @@ TreeMapLayout.prototype.position = function(bounds, shapes) {
     }
 };
 
-TreeMapLayout.prototype.rearrange = function(elements, struct, layer) {
+TreeMapLayout.prototype.rearrange = function(type, elements, struct, layer, context) {
     if(this.orientation == null)
 	this.orientation = "horizontal";
 
@@ -1377,7 +1525,8 @@ PolarLayout.prototype.getRangeMax = function(key, bounds) {
     }
 };
 
-PolarLayout.prototype.position = function(bounds, shapes) {
+PolarLayout.prototype.position = function(shapes, bounds, context) {
+    shapes = shapes['nodes'];
     var degreesPerPixel = 0;
     for(var i=0; i<shapes.length; i++)
 	degreesPerPixel = degreesPerPixel + shapes[i].positionBindings['width'];
@@ -1511,10 +1660,609 @@ PolarLayout.prototype.position = function(bounds, shapes) {
     return acum;
 };
 
-PolarLayout.prototype.rearrange = function(elements, struct, layer) {
+PolarLayout.prototype.rearrange = function(type, elements, struct, layer, context) {
     // nothing to do here
 };
 
+// Force layout
+var ForceLayout = function(opts) {
+    this.opts = opts;
+};
+
+// Registering the layout
+Layout.register('Force', ForceLayout);
+
+ForceLayout.prototype.buildScale = function(key, bounds, scale, shapes, graph) {
+    var prop = scale['rdfProperty'];
+    if(scale['scale'] === 'continous') {
+	console.log("PROPERTY ");
+	console.log(prop);
+
+	var domainMin = scale['domainMin'] || null;
+	var domainMax = scale['domainMax'] || null;
+
+	if(domainMin === null | domainMax === null) {
+	    console.log("RESOLVING PROP");
+	    console.log(graph.rdf.resolve(prop));
+	    var maxMin = Utils.findMaxMin(Utils.map(shapes, function(shape){ return shape.rdfProps; }), (graph.rdf.resolve(prop) || prop));
+	    console.log("MAXMIN");
+	    console.log(maxMin);
+	    var domain = maxMin[0] - maxMin[1];
+	    var marks = domain / 4.0;
+	    if(maxMin[1] - marks < 0)
+		marks = maxMin[1];
+
+	    // avoid <0 min 
+	    if(maxMin[1] - marks < 0)
+		marks = maxMin[1];
+	    if(scale['domainMax'] == null)
+		domainMax = maxMin[0] + marks;
+	    else 
+		domainMax = parseFloat(scale['domainMax']);
+	    if(scale['domainMin'] == null) 
+		domainMin = maxMin[1] - marks;
+	    else
+		domainMin = parseFloat(scale['domainMin']);
+	}
+
+	var rangeMin = scale['rangeMin'] || this.getRangeMin(key, bounds);
+	var rangeMax = scale['rangeMax'] || this.getRangeMax(key, bounds);
+
+	console.log("DOMAIN MIN ");
+	console.log(domainMin);
+	console.log("DOMAIN MAX ");
+	console.log(domainMax);
+
+	console.log("RANGE MIN ");
+	console.log(rangeMin);
+	console.log("RANGE MAX ");
+	console.log(rangeMax);
+
+	return new Scale['continous'](domainMax, domainMin, rangeMax, rangeMin);
+	
+    } else if(scale['scale'] === 'gradient') {
+	var domainMin = scale['domainMin'] || null;
+	var domainMax = scale['domainMax'] || null;
+
+	if(domainMin === null | domainMax === null) {
+	    var maxMin = Utils.findMaxMin(Utils.map(shapes, function(shape){ return shape.rdfProps; }), (graph.rdf.resolve(prop) || prop));
+	    var domain = maxMin[0] - maxMin[1];
+	    if(scale['domainMax'] == null)
+		domainMax = maxMin[0];
+	    else 
+		domainMax = parseFloat(scale['domainMax']);
+	    if(scale['domainMin'] == null) 
+		domainMin = maxMin[1];
+	    else
+		domainMin = parseFloat(scale['domainMin']);
+	}
+
+	var rangeMin = scale['rangeMin'] || this.getRangeMin(key, bounds);
+	var rangeMax = scale['rangeMax'] || this.getRangeMax(key, bounds);
+
+	return new Scale['gradient'](domainMax, domainMin, rangeMax, rangeMin);
+
+    } else if(scale['scale'] === 'proportional') {
+	console.log("PROPORTIONAL SCALE HORIZ");
+	var acum = 0;
+
+	var rdfProperty = graph.rdf.resolve(prop) || prop;
+	console.log("PROPERTY: "+rdfProperty);
+	var values = Utils.map(shapes, function(shape){ console.log(rdfProperty); console.log(shape.rdfProps); return shape.rdfProps[rdfProperty]; });
+	console.log("VALUES");
+	console.log(values);
+	for(var i=0; i<values.length; i++)
+	    acum = acum + values[i];
+
+	var rangeMin = scale['rangeMin'] || this.getRangeMin(key, bounds);
+	var rangeMax = scale['rangeMax'] || this.getRangeMax(key, bounds);
+
+	console.log("ACUM "+acum);
+	console.log("RANGE MAX "+rangeMax);
+	console.log("RANGE MIN "+rangeMin);
+	return new Scale['proportional'](acum, rangeMax, rangeMin);
+
+    } else if(scale['scale'] === 'hue') {
+	prop = graph.rdf.resolve(prop) || prop;
+	var categoriesMapping = {};
+	var categories = [];
+	for(var i=0; i<shapes.length; i++) {
+	    var value = shapes[i].rdfProps[prop];
+	    if(categoriesMapping[value] == null) {
+		categoriesMapping[value] = true;
+		categories.push(value);
+	    }
+	}
+	return new Scale['hue'](categories);
+    } else {
+	// TODO: add remaining scales here
+    }
+};
+
+ForceLayout.prototype.getRangeMin = function(key, bounds) {
+    if(key === 'height' || key === 'y') {
+	return bounds['y'];
+    } else if(key === 'width' || key === 'x' || key === 'size') {
+	return bounds['x'];	    
+    }
+};
+
+ForceLayout.prototype.getRangeMax = function(key, bounds) {
+    if(key === 'height' || key === 'y') {
+	return bounds['y'] + bounds['height'];
+    } else if(key === 'width' || key === 'x' || key === 'size') {
+	return bounds['x'] + bounds['width'];	    
+    }
+};
+
+ForceLayout.prototype.position = function(shapes, bounds, context) {
+
+
+    var _Graph = function() {
+	this.nodeSet = {};
+	this.nodes = [];
+	this.edges = [];
+	this.adjacency = {};
+
+	this.nextNodeId = 0;
+	this.nextEdgeId = 0;
+	this.eventListeners = [];
+    };
+
+    var _Node = function(id, data) {
+	this.id = id;
+	this.data = typeof(data) !== 'undefined' ? data : {};
+    };
+
+    var _Edge = function(id, source, target, data) {
+	this.id = id;
+	this.source = source;
+	this.target = target;
+	this.data = typeof(data) !== 'undefined' ? data : {};
+    };
+
+    _Graph.prototype.addNode = function(node) {
+	if (typeof(this.nodeSet[node.id]) === 'undefined') {
+	    this.nodes.push(node);
+	}
+
+	this.nodeSet[node.id] = node;
+
+	this.notify();
+	return node;
+    };
+
+    _Graph.prototype.addEdge = function(edge) {
+	var exists = false;
+	this.edges.forEach(function(e) {
+	    if (edge.id === e.id) { exists = true; }
+	});
+
+	if (!exists) {
+	    this.edges.push(edge);
+	}
+
+	if (typeof(this.adjacency[edge.source.id]) === 'undefined') {
+	    this.adjacency[edge.source.id] = {};
+	}
+	if (typeof(this.adjacency[edge.source.id][edge.target.id]) === 'undefined') {
+	    this.adjacency[edge.source.id][edge.target.id] = [];
+	}
+
+	exists = false;
+	this.adjacency[edge.source.id][edge.target.id].forEach(function(e) {
+	    if (edge.id === e.id) { exists = true; }
+	});
+
+	if (!exists) {
+	    this.adjacency[edge.source.id][edge.target.id].push(edge);
+	}
+
+	this.notify();
+	return edge;
+    };
+
+    _Graph.prototype.newNode = function(data) {
+	var node = new _Node(this.nextNodeId++, data);
+	this.addNode(node);
+	return node;
+    };
+
+    _Graph.prototype.newEdge = function(source, target, data) {
+	var edge = new _Edge(this.nextEdgeId++, source, target, data);
+	this.addEdge(edge);
+	return edge;
+    };
+
+    // find the edges from node1 to node2
+    _Graph.prototype.getEdges = function(node1, node2) {
+	if (typeof(this.adjacency[node1.id]) !== 'undefined'
+	    && typeof(this.adjacency[node1.id][node2.id]) !== 'undefined') {
+	    return this.adjacency[node1.id][node2.id];
+	}
+
+	return [];
+    };
+
+
+
+    _Graph.prototype.addGraphListener = function(obj) {
+	this.eventListeners.push(obj);
+    };
+
+    _Graph.prototype.notify = function() {
+	this.eventListeners.forEach(function(obj){
+	    obj.graphChanged();
+	});
+    };
+
+    // -----------
+    var _ForceDirected = function(graph, stiffness, repulsion, damping) {
+	this.graph = graph;
+	this.stiffness = stiffness; // spring stiffness constant
+	this.repulsion = repulsion; // repulsion constant
+	this.damping = damping; // velocity damping factor
+
+	this.nodePoints = {}; // keep track of points associated with nodes
+	this.edgeSprings = {}; // keep track of springs associated with edges
+    };
+
+    _ForceDirected.prototype.point = function(node) {
+	if (typeof(this.nodePoints[node.id]) === 'undefined') {
+	    var mass = typeof(node.data.mass) !== 'undefined' ? node.data.mass : 1.0;
+	    console.log([this.centerx,this.centery]);
+	    //this.nodePoints[node.id] = new _ForceDirected.Point(_Vector.random(this.centerx, this.centery), mass);
+	    this.nodePoints[node.id] = new _ForceDirected.Point(_Vector.random(), mass);
+	}
+
+	return this.nodePoints[node.id];
+    };
+
+    _ForceDirected.prototype.spring = function(edge) {
+	if (typeof(this.edgeSprings[edge.id]) === 'undefined') {
+	    var length = typeof(edge.data.length) !== 'undefined' ? edge.data.length : 1.0;
+
+	    var existingSpring = false;
+
+	    var from = this.graph.getEdges(edge.source, edge.target);
+	    from.forEach(function(e) {
+		if (existingSpring === false && typeof(this.edgeSprings[e.id]) !== 'undefined') {
+		    existingSpring = this.edgeSprings[e.id];
+		}
+	    }, this);
+
+	    if (existingSpring !== false) {
+		return new _ForceDirected.Spring(existingSpring.point1, existingSpring.point2, 0.0, 0.0);
+	    }
+
+	    var to = this.graph.getEdges(edge.target, edge.source);
+	    from.forEach(function(e){
+		if (existingSpring === false && typeof(this.edgeSprings[e.id]) !== 'undefined') {
+		    existingSpring = this.edgeSprings[e.id];
+		}
+	    }, this);
+
+	    if (existingSpring !== false) {
+		return new _ForceDirected.Spring(existingSpring.point2, existingSpring.point1, 0.0, 0.0);
+	    }
+
+	    this.edgeSprings[edge.id] = new _ForceDirected.Spring(
+		this.point(edge.source), this.point(edge.target), length, this.stiffness
+	    );
+	}
+
+	return this.edgeSprings[edge.id];
+    };
+
+    // callback should accept two arguments: Node, Point
+    _ForceDirected.prototype.eachNode = function(callback) {
+	var t = this;
+	this.graph.nodes.forEach(function(n){
+	    callback.call(t, n, t.point(n));
+	});
+    };
+
+    // callback should accept two arguments: Edge, Spring
+    _ForceDirected.prototype.eachEdge = function(callback) {
+	var t = this;
+	this.graph.edges.forEach(function(e){
+	    callback.call(t, e, t.spring(e));
+	});
+    };
+
+    // callback should accept one argument: Spring
+    _ForceDirected.prototype.eachSpring = function(callback) {
+	var t = this;
+	this.graph.edges.forEach(function(e){
+	    callback.call(t, t.spring(e));
+	});
+    };
+
+
+    // Physics stuff
+    _ForceDirected.prototype.applyCoulombsLaw = function() {
+	this.eachNode(function(n1, point1) {
+	    this.eachNode(function(n2, point2) {
+		if (point1 !== point2)
+		{
+		    var d = point1.p.subtract(point2.p);
+		    var distance = d.magnitude() + 0.1; // avoid massive forces at small distances (and divide by zero)
+		    var direction = d.normalise();
+
+		    // apply force to each end point
+		    point1.applyForce(direction.multiply(this.repulsion).divide(distance * distance * 0.5));
+		    point2.applyForce(direction.multiply(this.repulsion).divide(distance * distance * -0.5));
+		}
+	    });
+	});
+    };
+
+    _ForceDirected.prototype.applyHookesLaw = function() {
+	this.eachSpring(function(spring){
+	    var d = spring.point2.p.subtract(spring.point1.p); // the direction of the spring
+	    var displacement = spring.length - d.magnitude();
+	    var direction = d.normalise();
+
+	    // apply force to each end point
+	    spring.point1.applyForce(direction.multiply(spring.k * displacement * -0.5));
+	    spring.point2.applyForce(direction.multiply(spring.k * displacement * 0.5));
+	});
+    };
+
+    _ForceDirected.prototype.attractToCentre = function() {
+	this.eachNode(function(node, point) {
+	    var direction = point.p.multiply(-1.0);
+	    point.applyForce(direction.multiply(this.repulsion / 50.0));
+	});
+    };
+
+
+    _ForceDirected.prototype.updateVelocity = function(timestep) {
+	this.eachNode(function(node, point) {
+	    // Is this, along with updatePosition below, the only places that your
+	    // integration code exist?
+	    point.v = point.v.add(point.a.multiply(timestep)).multiply(this.damping);
+	    point.a = new _Vector(0,0);
+	});
+    };
+
+    _ForceDirected.prototype.updatePosition = function(timestep) {
+	var maxx, maxy, minx, miny;
+	this.eachNode(function(node, point) {
+	    // Same question as above; along with updateVelocity, is this all of
+	    // your integration code?
+	    point.p = point.p.add(point.v.multiply(timestep));
+	    if(maxx == null || maxy == null) {
+		maxx = point.p.x;
+		maxy = point.p.y;
+		minx = point.p.x;
+		miny = point.p.y;
+	    } else {
+		if(point.p.x > maxx)
+		    maxx = point.p.x;
+		if(point.p.y > maxy)
+		    maxy = point.p.y;
+		if(point.p.x < minx)
+		    minx = point.p.x;
+		if(point.p.y < miny)
+		    miny = point.p.y;
+
+	    }
+	});
+
+	this.MAX_X = maxx;
+	this.MAX_Y = maxy;
+
+	this.MIN_X = minx;
+	this.MIN_Y = miny;
+
+    };
+
+    // Calculate the total kinetic energy of the system
+    _ForceDirected.prototype.totalEnergy = function(timestep) {
+	var energy = 0.0;
+	this.eachNode(function(node, point) {
+	    var speed = point.v.magnitude();
+	    energy += 0.5 * point.m * speed * speed;
+	});
+
+	return energy;
+    };
+
+
+    // start simulation
+    _ForceDirected.prototype.start = function(x,y,w,h) {
+	this.centerx = x+(w/2);
+	this.centery = x+(h/2);
+
+	var t = this;
+
+	if (this._started) return;
+	this._started = true;
+
+	do {
+	    t.applyCoulombsLaw();
+	    t.applyHookesLaw();
+	    t.attractToCentre();
+	    t.updateVelocity(0.03);
+	    t.updatePosition(0.03);
+	    console.log(".");
+	    t.eachNode(function(n,p) {
+		console.log(p);
+	    });
+	} while(t.totalEnergy() >= 0.01)
+    };
+
+
+    // Vector
+    _Vector = function(x, y) {
+	this.x = x;
+	this.y = y;
+    };
+
+    _Vector.random = function(x, y) {
+	if(x != null && y!= null) {
+	    var v =  new _Vector(x+(10.0 * (Math.random() - 0.5)), y+(10.0 * (Math.random() - 0.5)));
+	    console.log("INIT");
+	    console.log(v);
+	    return v;
+	} else {
+	    console.log("INIT NULL");
+	    return new _Vector(10.0 * (Math.random() - 0.5), 10.0 * (Math.random() - 0.5));
+	}
+    };
+
+    _Vector.prototype.add = function(v2) {
+	return new _Vector(this.x + v2.x, this.y + v2.y);
+    };
+
+    _Vector.prototype.subtract = function(v2) {
+	return new _Vector(this.x - v2.x, this.y - v2.y);
+    };
+
+    _Vector.prototype.multiply = function(n) {
+	return new _Vector(this.x * n, this.y * n);
+    };
+
+    _Vector.prototype.divide = function(n) {
+	return new _Vector((this.x / n) || 0, (this.y / n) || 0); // Avoid divide by zero errors..
+    };
+
+    _Vector.prototype.magnitude = function() {
+	return Math.sqrt(this.x*this.x + this.y*this.y);
+    };
+
+    _Vector.prototype.normal = function() {
+	return new _Vector(-this.y, this.x);
+    };
+
+    _Vector.prototype.normalise = function() {
+	return this.divide(this.magnitude());
+    };
+
+    // Point
+    _ForceDirected.Point = function(position, mass) {
+	this.p = position; // position
+	this.m = mass; // mass
+	this.v = new _Vector(0, 0); // velocity
+	this.a = new _Vector(0, 0); // acceleration
+    };
+
+    _ForceDirected.Point.prototype.applyForce = function(force) {
+	this.a = this.a.add(force.divide(this.m));
+    };
+
+    // Spring
+    _ForceDirected.Spring = function(point1, point2, length, k) {
+	this.point1 = point1;
+	this.point2 = point2;
+	this.length = length; // spring length at rest
+	this.k = k; // spring constant (See Hooke's law) .. how stiff the spring is
+    };
+
+
+    var g = new _Graph(), disambg = {}, edge;
+    var shapesMapping = {}, edgesMapping = {};
+    var edgeShapes = [], nodeShapes = [];
+
+
+
+    for(i=0; i<shapes.nodes.length; i++) {
+	node = shapes.nodes[i].graph;
+	console.log("MASS");
+	console.log(shapes.nodes[i].properties['mass']);
+	node.mass = shapes.nodes[i].properties['mass'];
+	disambg[shapes.nodes[i].graph.nodeURI.value] = g.newNode(node);
+	shapesMapping[shapes.nodes[i].graph.nodeURI.value] = shapes.nodes[i];
+    }
+
+    for(i=0; i<shapes.edges.length; i++)  {
+	//console.log(shapes.edges[i]);
+	edge = g.newEdge(disambg[shapes.edges[i].graph.source.nodeURI.value], disambg[shapes.edges[i].graph.target.nodeURI.value]);
+	edgesMapping[edge.id] = shapes.edges[i];
+    }
+
+    var fd = new _ForceDirected(g, 5, 5, 0.1), shape;
+
+    fd.start(bounds.x, bounds.y, bounds.width, bounds.height);
+    console.log("=============");
+    var wm = bounds.width/2;
+    var hm = bounds.height/2;
+    var topx = Math.ceil(Math.max(Math.abs(fd.MAX_X), Math.abs(fd.MIN_X)));
+    var topy = Math.ceil(Math.max(Math.abs(fd.MAX_Y), Math.abs(fd.MIN_Y)));
+
+    topx = topx + (topx * 0.1);
+    topy = topy + (topy * 0.1);
+    var screenPoints = {};
+
+    var acum = [];
+    fd.eachNode(function(n,p) {
+	shape = shapesMapping[n.data.nodeURI.value];
+	shape.bounds = {};
+
+	console.log(p.p);
+	var dx = Math.abs(p.p.x) / topx;
+	console.log("DX "+dx);
+	dx = wm * dx;
+	console.log(dx);
+	if(p.p.x < 0) 
+	    shape.bounds.x = bounds.x + wm - dx;
+	else
+	    shape.bounds.x = bounds.x + wm + dx;
+
+	var dy = Math.abs(p.p.y) / topy;
+	console.log("DY "+dy);
+	dy = hm * dy;
+	console.log(dy);
+	if(p.p.y < 0) 
+	    shape.bounds.y = bounds.y + hm - dy;
+	else
+	    shape.bounds.y = bounds.y + hm + dy;
+
+	screenPoints[n.id] = {x: shape.bounds.x, y: shape.bounds.y};
+
+	shape.bounds['width'] = (shape.positionBindings['width']||shape.positionBindings['size']);
+	shape.bounds['height'] = (shape.positionBindings['height']||shape.positionBindings['size']);
+	shape.bounds['radius'] = (shape.positionBindings['radius']||shape.positionBindings['radius']);
+	nodeShapes.push(shape);
+    });
+
+    var edgeShape, uri;
+    fd.eachEdge(function(edge, spring){
+	console.log("--");
+	console.log("FROM:");
+	console.log(screenPoints[edge.source.id]);
+	console.log("TO:");
+	console.log(screenPoints[edge.target.id]);
+
+	uri = 'http://linkedvis.org/edges/from/'+edge.source.id+"/to/"+edge.target.id;
+
+	edgeShape = edgesMapping[edge.id];
+	edgeShape.uri = uri;
+
+	edgeShape.bounds = {};
+	edgeShape.bounds['x1'] = screenPoints[edge.source.id].x;
+	edgeShape.bounds['y1'] = screenPoints[edge.source.id].y;
+
+	edgeShape.bounds['x2'] = screenPoints[edge.target.id].x;
+	edgeShape.bounds['y2'] = screenPoints[edge.target.id].y;
+
+	//edge.data.properties['shape'] = 'line';
+	//edge.data.properties['stroke'] = '#999999';
+	//edge.data.properties['stroke-width'] = 1;
+
+	console.log("ADDING EDGE");
+	console.log(edgeShape);
+	edgeShapes.push(edgeShape);
+    });
+
+    return edgeShapes.concat(nodeShapes);
+};
+
+
+ForceLayout.prototype.rearrange = function(type, elements, struct, layer, context) {
+    // nothing to do here
+};
 
 /**
  * Struct object
@@ -1671,8 +2419,10 @@ Tree.countAllNodes = function(treeNode) {
 		    current.node.nodes[i]['lv:cumulativeCount'] = 1;
 		    current.node.nodes[i]['lv:count'] = 1;
 		    current.node.nodes[i]['lv:childrenCount'] = 0;
+		    current.node.nodes[i]['lv:label'] = current['label'];
 		}
 		current.allChildren = [].concat(current.node.nodes);
+		current.node['lv:label'] = current['label'];
 		if(current.children && current.children.length > 0) {
 		    console.log("FOUND NON PROCESSED GROUP");
 		    nextChild = current.children[current.processed];
@@ -1961,6 +2711,75 @@ Tree.prototype.processNode = function(spec, parent, graph, context, cb) {
 
 Struct.register('Tree', Tree);
 
+var Graph  = function() {
+    this.query = arguments[0];
+
+    this.query = "SELECT ?source ?target " + this.query;
+};
+
+Graph.prototype.execute = function(graph, cb) {
+    var that = this;
+    var resolved = [], mass;
+    console.log("GRAPH QUERY");
+    console.log(this.query);
+    graph.execute(this.query, function(s,results) {
+	if(s) {
+	    var mapping = {}, links, source, target, disambg = {};
+	    for(var i=0; i<results.length; i++) {
+		source = results[i].source.value;
+		target = results[i].target.value;
+
+		links = mapping[source] || {};
+		mass = links[target] || 0;
+		mass++;
+		links[target] = mass;
+		mapping[source] = links;
+		disambg[source] = results[i].source;
+		disambg[target] = results[i].target;
+	    }
+
+	    var acum = [];
+	    for(var uri in disambg)
+		acum.push(disambg[uri]);
+		
+
+	    Utils.repeat(0, acum.length, function(k,env) {
+		floop = arguments.callee;
+		var query = "CONSTRUCT { <"+acum[env._i].value+"> ?p ?o } WHERE { <"+acum[env._i].value+"> ?p ?o }";
+		setTimeout(function() {
+		    graph.execute(query, function(s, nodeGraph) {
+			if(s) {
+			    nodeGraph['$type'] = 'graphnode';
+			    nodeGraph.nodeURI = acum[env._i];
+			    nodeGraph.rdf = graph.rdf;
+			    disambg[acum[env._i].value] = nodeGraph;
+			}
+			k(floop,env);
+		    });
+		},0);
+	    }, function() {
+		var nodesAcum = [], node, linksAcum = [];
+		for(var uri in mapping) {
+		    node = disambg[uri];
+		    nodesAcum.push(node);
+		    for(targetUri in mapping[uri]) 
+			linksAcum.push({source: node, target: disambg[targetUri], '$type': 'graphedge', mass: mapping[uri][targetUri]});
+		}
+		cb(true, {'nodes': nodesAcum, 'edges': linksAcum});
+	    });
+	} else {
+	    cb(false, results);
+	}
+    });
+};
+
+Graph.prototype.group = function(groupPredicate) {
+    this.groupPredicate = groupPredicate;
+    return this;
+};
+
+Struct.register('Graph', Graph);
+
 /**
  * Query tree object
  */
@@ -1992,6 +2811,18 @@ LinkedVis.prototype.from = function() {
 	// @todo
 	// retrieve data here
     }
+
+    this.metagraph = rdfstore.create();
+    this.datagraph = rdfstore.create();
+
+    this.context = {
+	metagraph: this.metagraph,
+	graph: this.graph,
+	datagraph: this.datagraph,
+	idGen: 0,
+	totalLayers: 0,
+	layerCounter: {}
+    };
 
     return this;
 };
@@ -2030,6 +2861,10 @@ LinkedVis.TreeMap = function(opts) {
     return Layout.build('TreeMap', opts);
 };
 
+LinkedVis.Force = function(opts) {
+    return Layout.build('Force', opts);
+};
+
 LinkedVis.prototype.stackLayer = function(cb) {
     var layer = new Layer(this.struct, this.graph, this.bounds);
     this.layers.push(layer);
@@ -2042,7 +2877,7 @@ LinkedVis.prototype.render = function(cb) {
 
     Utils.repeat(0, this.layers.length, function(k,env) {
 	var floop = arguments.callee;
-	that.layers[env._i].render(env.doc, function(s, doc) {
+	that.layers[env._i].render(env.doc, that.context, function(s, doc) {
 	    env.doc = doc;
 	    k(floop,env);
 	});

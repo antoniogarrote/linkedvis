@@ -398,7 +398,7 @@ exports.testCreation8 = function(test) {
     });
 };
 
-*/
+
 
 exports.testCreation9 = function(test) {
 
@@ -478,9 +478,15 @@ exports.testCreation9 = function(test) {
 				              scale: 'proportional'},
 					      
 			    fill:            function(node,i){ 
-       				                console.log("NODE FILL");
-                       				console.log(node);
-			                  	return (node['lv:label'] === 'allTweets' ? '#00ff00' : '#ff00ff');  
+			                          if (node['lv:label'] === 'ghnews') {
+				                      return '#ff0000';
+				                  } else if(node['lv:label'] === 'ghpulls') {
+				                      return '#ffcc00';				                   
+				                  } else if(node['lv:label'] === 'ghcommits') {
+				                      return '#ffaa00';				                   				                   
+				                  } else if(node['lv:label'] === 'allTweets') {
+				                      return '#00aaff';
+				                  }
 			                     },
 					      
 			    stroke:          'black',
@@ -489,6 +495,83 @@ exports.testCreation9 = function(test) {
 			   })
 
 		     .layout(LinkedVis.TreeMap())
+		})
+
+  		.render(function(s, lv) {
+		    console.log(s);
+		    console.log(lv);
+		    test.done();
+		});
+
+	});
+    });
+};
+
+*/
+
+
+exports.testCreation10 = function(test) {
+
+    rdfstore.create(function(graph) {
+	graph.registerDefaultProfileNamespaces();
+	graph.registerDefaultNamespace("test","http://test.com/");
+
+        var data = '@prefix test: <http://test.com/> .\
+                    @prefix foaf: <http://xmlns.com/foaf/0.1/>.\
+		    test:1 a test:Node ;\
+                         foaf:age 12 ;\
+			 test:links test:2;\
+			 test:links test:5.\
+		    test:2 a test:Node ;\
+                         foaf:age 24 ;\
+			 test:links test:3;\
+			 test:links test:4.\
+		    test:3 a test:Node ;\
+                         foaf:age 5 ;\
+			 test:links test:1;\
+			 test:links test:5.\
+		    test:4 a test:Node ;\
+                         foaf:age 10 ;\
+			 test:links test:2 .\
+		    test:5 a test:Node ;\
+                         foaf:age 50 ;\
+			 test:links test:1 ;\
+			 test:links test:3 ; \
+			 test:links test:4 .';
+
+
+	graph.load("text/n3", data, function(s,d) {
+
+
+	    new LinkedVis({width: 500, height: 500})
+
+		.from(graph)
+
+                .struct(LinkedVis.Graph("{ ?source test:links ?target }"))
+
+		.stackLayer(function(l) {
+
+		    l.bind('nodes',{
+			shape:           'circle', 
+			radius:          {rdfProperty: 'foaf:age',
+					  scale: 'continous',
+			                  rangeMin: 5,
+					  rangeMax: 30},
+			mass:            {rdfProperty: 'foaf:age',
+					  scale: 'continous',
+			                  rangeMin: 1,
+					  rangeMax: 10},
+			fill:            '#0000ff',
+			'stroke-width':  1
+		    })
+
+		    .bind('edges',{
+			shape:          'line',
+			stroke:         '#cccccc',
+			'stroke-width': 1
+		    })
+			       
+		    .layout(LinkedVis.Force())
 		})
 
   		.render(function(s, lv) {
