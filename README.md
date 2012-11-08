@@ -1,4 +1,4 @@
-#linkedvis
+#LinkedVis
 
 LinkedVis is a JS visualization toolkit for RDF data. It follows a  "Grammar of Graphics" (Wilkinson2005) approach for data visualisation as other popular libraries like ggplot2 for the R programming language.
 The main difference between LinkedVis and these libraries is that LinkedVis is aware of the data layer for the visualisation, and supports the transformation of the RDF graph into the right data structure for the visualization as part of the grammar. LinkedVis also makes it possible to embed meta-data about the visualization as well as the raw RDF data within the final graphical output.
