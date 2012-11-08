@@ -30,7 +30,8 @@ exports.testCreation = function(test) {
 
 		    l.bind({shape:'rect', 
 			    height:{rdfProperty: 'foaf:age',
-				    scale: 'continous'},
+				    scale: 'continous',
+				    rangeMax: 250},
 //				    domainMin: 0},
 			    width: 20,
 			    fill: 'green'})
@@ -58,8 +59,6 @@ exports.testCreation = function(test) {
 	});
     });
 };
-
-
 
 exports.testCreation2 = function(test) {
 
@@ -509,7 +508,7 @@ exports.testCreation9 = function(test) {
 
 */
 
-
+/*
 exports.testCreation10 = function(test) {
 
     rdfstore.create(function(graph) {
@@ -574,6 +573,66 @@ exports.testCreation10 = function(test) {
 		    .layout(LinkedVis.Force())
 		})
 
+  		.render(function(s, lv) {
+		    console.log(s);
+		    console.log(lv);
+		    test.done();
+		});
+
+	});
+    });
+};
+*/
+
+
+exports.testNested = function(test) {
+
+    var data = "@prefix foaf: <http://xmlns.com/foaf/0.1/>.\
+                @prefix test: <http://test.com/> .\
+                @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\
+                test:Trudy a foaf:Person; \
+                           foaf:age \"25\"^^<xsd:int> ;\
+                           foaf:name \"Ladislav\" .\
+                test:Helena a foaf:Person;\
+                            foaf:age 34 ;\
+                            foaf:name \"Helena\" .";
+
+    rdfstore.create(function(graph) {
+	graph.registerDefaultProfileNamespaces();
+	graph.load("text/n3", data, function(s,d) {
+
+	    console.log("TRIPLES");
+	    graph.execute("select * { ?s ?p ?o }", function(s,r) { console.log(r) });
+
+	    new LinkedVis({width: 500, height: 500}).from(graph)
+
+		.struct(LinkedVis.List("{ ?node a foaf:Person }"))
+
+		.stackLayer(function(l) {
+
+		    l.bind({shape:'rect', 
+			    height:{rdfProperty: 'foaf:age',
+				    scale: 'continous',
+				    rangeMax: 250},
+			    width: 20,
+			    fill: 'green'})
+
+		     .layout(LinkedVis.Horizontal({'vertical-align': 'bottom',
+						   'align': 'right'})
+                     .theme({title: "THIS IS A TEST"}))
+		     .nestLayer(function(l) {
+
+			 l.bind({shape:'text', 
+				 height:3,
+				 fill: "#0000ff",
+				 content: 'foaf:name',
+				 'text-align': 'center'})
+
+			     .layout(LinkedVis.Vertical({'vertical-align': 'bottom'}))
+
+		     });
+
+		})
   		.render(function(s, lv) {
 		    console.log(s);
 		    console.log(lv);

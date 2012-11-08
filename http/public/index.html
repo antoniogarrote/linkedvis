@@ -1,0 +1,151 @@
+<html>
+  <head>
+    <title>LinkedVis test</title>
+    <script src="js/rdf_store.js" type="text/javascript"></script>
+    <script src="http://d3js.org/d3.v2.js"></script>
+    <script src="http://code.jquery.com/jquery-1.8.2.min.js"></script>
+    <script type="text/javascript">
+      var Counter = {
+          query: 0,
+          building: 0,
+          rendering: 0,
+          metadata: 0
+      };
+
+      Counter.before = function(kind) {
+          this.kind = kind;
+          this.beforeTime = (new Date()).getTime();
+      };
+       
+      Counter.after = function() {
+          var afterTime = (new Date()).getTime();
+          this[this.kind] += (afterTime - this.beforeTime);
+      };
+       
+      Counter.totalBefore = function() {
+          this.totalTime = (new Date()).getTime();    
+      };
+       
+      Counter.totalAfter = function() {
+          var afterTime = (new Date()).getTime();
+          this.totalTime = afterTime - this.totalTime;
+      };
+       
+      Counter.reset = function() {
+          this.query = 0;
+          this.building = 0;
+          this.rendering = 0;
+          this.totalTime = 0;
+          this.metadata = 0;
+      };
+       
+      Counter.total = function() {
+          return {
+       	query: this.query,
+       	building: this.totalTime - (this.query+this.rendering),
+       	rendering: this.rendering,
+       	metadata: this.metadata,
+       	total: this.totalTime
+          };
+      };
+
+      jQuery(document).ready(function() {
+	  rdfstore.create(function(graph) {
+	      graph.registerDefaultProfileNamespaces();
+	      graph.registerDefaultNamespace("gg","http://ggplot.org/diamonds/");
+	      graph.load("remote", "http://localhost:9292/850/diamonds_test.n3", function(s,d) {
+		  Counter.totalBefore();
+		  Counter.before('query');
+		  graph.execute("SELECT ?node ?x ?y ?radius ?fill \
+				   { ?node a gg:Diamond ; \
+				     gg:x ?x ;\
+				     gg:y ?y ;\
+				     gg:carat ?radius ;\
+				     gg:cut ?fill .}", function(s,data) {
+		      console.log(data.length);
+	              Counter.after();
+		      Counter.before('rendering');
+                      var margin = {top: 20, right: 20, bottom: 30, left: 40},
+			  width = 960 - margin.left - margin.right,
+			  height = 500 - margin.top - margin.bottom;
+		      var x = d3.scale.linear().range([0, width]);
+		      var y = d3.scale.linear().range([height, 0]);
+	              var r = d3.scale.linear().range([1, 10]);
+		      var color = d3.scale.category20();
+		      var xAxis = d3.svg.axis().scale(x).orient("bottom");
+		      var yAxis = d3.svg.axis().scale(y).orient("left");
+
+
+                      var svg = d3.select("body").append("svg")
+                          .attr("width", width + margin.left + margin.right)
+                          .attr("height", height + margin.top + margin.bottom)
+                        .append("g")
+                          .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+		      x.domain(d3.extent(data, function(d) { return parseFloat(d.x.value); })).nice();
+		      y.domain(d3.extent(data, function(d) { return parseFloat(d.y.value); })).nice();
+		      r.domain(d3.extent(data, function(d) { return parseFloat(d.radius.value); })).nice();
+
+                      svg.append("g")
+                          .attr("class", "x axis")
+                          .attr("transform", "translate(0," + height + ")")
+                          .call(xAxis)
+                        .append("text")
+                          .attr("class", "label")
+                          .attr("x", width)
+                          .attr("y", -6)
+                          .style("text-anchor", "end")
+                          .text("gg:x (cm)");
+                       
+                      svg.append("g")
+                          .attr("class", "y axis")
+                          .call(yAxis)
+                        .append("text")
+                          .attr("class", "label")
+                          .attr("transform", "rotate(-90)")
+                          .attr("y", 6)
+                          .attr("dy", ".71em")
+                          .style("text-anchor", "end")
+                          .text("gg:y (cm)")
+                       
+                      svg.selectAll(".dot")
+                          .data(data)
+                        .enter().append("circle")
+                          .attr("class", "dot")
+			  .attr("r", function(d) { return r(parseFloat(d.radius.value)); })
+			  .attr("cx", function(d) { return x(parseFloat(d.x.value)); })
+			  .attr("cy", function(d) { return y(parseFloat(d.y.value)); })
+                          .style("fill", function(d) { return color(d.fill.value); });
+                       
+                      var legend = svg.selectAll(".legend")
+                          .data(color.domain())
+                        .enter().append("g")
+                          .attr("class", "legend")
+                          .attr("transform", function(d, i) { return "translate(0," + i * 20 + ")"; });
+                       
+                      legend.append("rect")
+                          .attr("x", width - 18)
+                          .attr("width", 18)
+                          .attr("height", 18)
+                          .style("fill", color);
+                       
+                      legend.append("text")
+                          .attr("x", width - 24)
+                          .attr("y", 9)
+                          .attr("dy", ".35em")
+                          .style("text-anchor", "end")
+                          .text(function(d) { return d; });
+	              Counter.after();
+		      Counter.totalAfter();
+		      console.log("QUERY: "+Counter.total().query);
+		      console.log("RENDERING: "+Counter.total().rendering);
+		      console.log("TOTAL: "+Counter.total().total);
+		  });
+	      });
+	  });
+      });
+    </script>
+  </head>
+  <body>
+  </body>
+</html>

@@ -1,0 +1,182 @@
+<!doctype html>
+<!-- paulirish.com/2008/conditional-stylesheets-vs-css-hacks-answer-neither/ -->
+<!--[if lt IE 7]> <html class="no-js lt-ie9 lt-ie8 lt-ie7" lang="en"> <![endif]-->
+<!--[if IE 7]>    <html class="no-js lt-ie9 lt-ie8" lang="en"> <![endif]-->
+<!--[if IE 8]>    <html class="no-js lt-ie9" lang="en"> <![endif]-->
+<!--[if gt IE 8]><!--> <html class="no-js" lang="en"> <!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+
+  <!-- Use the .htaccess and remove these lines to avoid edge case issues.
+       More info: h5bp.com/i/378 -->
+  <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+
+  <title></title>
+  <meta name="description" content="">
+
+  <!-- Mobile viewport optimized: h5bp.com/viewport -->
+  <meta name="viewport" content="width=device-width">
+
+  <!-- Place favicon.ico and apple-touch-icon.png in the root directory: mathiasbynens.be/notes/touch-icons -->
+
+    <style>
+       body {
+           font: 16px/26px Helvetica,Helvetica Neue,Arial;
+       }
+        
+       .tabs-options {
+           margin-top: 20px;
+           margin-bottom: 10px
+       }
+        
+       .tabs-options span {
+           padding: 10px;
+           margin-bottom: 10px;
+       }
+        
+       .example {
+           margin-left: 50px;
+           margin-bottom: 10px;
+       }
+
+       #canvas {
+           min-height: 500px
+       }
+
+    </style>
+  <Link rel="stylesheet" href="../css/codemirror.css">
+  <link rel="stylesheet" href="../css/rdfstore_frontend.css">
+  <!-- <link rel="stylesheet" href="../css/bootstrap-responsive.min.css"> -->
+
+  <!-- More ideas for your <head> here: h5bp.com/d/head-Tips -->
+
+  <!-- All JavaScript at the bottom, except this Modernizr build.
+       Modernizr enables HTML5 elements & feature detects for optimal performance.
+       Create your own custom Modernizr build: www.modernizr.com/download/ -->
+  <script type="text/javascript" src="http://ajax.aspnetcdn.com/ajax/jQuery/jquery-1.7.1.min.js"></script>
+  <script type='text/javascript' src='https://ajax.googleapis.com/ajax/libs/jqueryui/1.8.16/jquery-ui.min.js'></script>
+  <script type='text/javascript' src='http://ajax.microsoft.com/ajax/jquery.templates/beta1/jquery.tmpl.min.js'></script>
+  <script type="text/javascript" src="../js/beautify.js"></script>
+  <script type="text/javascript" src="../js/examples4.js"></script>
+  <script type="text/javascript" src="../js/codemirror.js"></script>
+  <script type="text/javascript" src="../js/modes/javascript.js"></script>
+  <script type="text/javascript" src="../js/modes/ntriples.js"></script>
+  <script type="text/javascript" src="../js/jsonStringify.js"></script>
+  <script type="text/javascript" src="../../lib/sizzle.js"></script>
+  <script type="text/javascript" src="../js/ko.js"></script>
+  <script type="text/javascript" src="../js/rdfstore.js"></script>
+  <script type='text/javascript' src='../js/rdfstore_frontend.js'></script>
+  <script type="text/javascript" src="../../src/vis.js"></script>
+
+  <script type="text/javascript">
+    jQuery(document).ready(function() {
+
+        var exampleIDs = ["ex4"];
+
+        for(var i=0; i<exampleIDs.length; i++) {
+	    var id = exampleIDs[i];
+	    if(window.examples[id].source) {
+		window['source'+id] = CodeMirror(jQuery("#"+id+" .source-tab-content").get(0), {
+		    smartIndent: true,
+		    lineNumbers: true,
+		    mode: "javascript",
+		    value: window.examples[id].source
+		});
+	    }
+
+	    if(window.examples[id].data && window.examples[id].data !== true) {
+  		window['data'+id] = CodeMirror(jQuery("#"+id+" .data-tab-content").get(0), {
+		    smartIndent: true,
+		    lineNumbers: true,
+		    mode: "ntriples",
+		    value: window.examples[id].data
+		});
+	    }
+	};
+
+	var handlers = {
+	    evaluate:  function(root) {
+		var result = null;
+		try {
+		    jQuery("#canvas").empty();
+		    var query = window[root.replace("#","source")].getValue();
+		    var data = window[root.replace("#","data")].getValue();
+		    query = "window.linkedvis = "+query;
+		    rdfstore.create(function(graph) {
+			graph.registerDefaultProfileNamespaces();
+			graph.registerDefaultNamespace("dbpedia","http://dbpedia.org/resource/");
+			graph.registerDefaultNamespace("dbpedia-owl","http://dbpedia.org/ontology/");
+			graph.registerDefaultNamespace("dbpprop","http://dbpedia.org/property/");
+			debugger;
+			graph.load("text/n3", data, function(s,d) {
+                            debugger;
+			    eval(query);
+			});
+		    });
+		} catch(e) {
+		    alert("EXCEPTION: "+e);
+		}
+	    }
+	    
+	}
+
+
+	var tabs = function(root) {
+	    $(root+" .tabs-options a").bind('click', function(e) {
+		$(root+" .tabs-options .selected-tab").removeClass('.selected-tab');
+		var css = $(e.target).attr("class").split(" ")[0];
+		$(e.target).addClass('selected-tab');
+		$(root+" .tab-content").hide();
+		$(root+" ."+css+"-content").show();
+		window[root.replace("#",css.split("-tab")[0])].refresh();
+		return false;
+	    });
+
+	    $("#run-examples").bind('click', function(e) {
+		handlers.evaluate(root)
+	    });
+	};
+
+	for(var i=0; i<exampleIDs.length; i++)
+	    tabs('#'+exampleIDs[i]);
+
+	$("#load-metagraph").bind('click', function() {
+	    LinkedVis.load("#canvas", function(g){
+		new rdfstore_frontend('#frontend',g);
+	    })
+	});
+    });
+  </script>
+
+</head>
+<body>
+  <!-- Prompt IE 6 users to install Chrome Frame. Remove this if you support IE 6.
+       chromium.org/developers/how-tos/chrome-frame-getting-started -->
+  <!--[if lt IE 7]><p class=chromeframe>Your browser is <em>ancient!</em> <a href="http://browsehappy.com/">Upgrade to a different browser</a> or <a href="http://www.google.com/chromeframe/?redirect=true">install Google Chrome Frame</a> to experience this site.</p><![endif]-->
+
+
+  <div id="canvas">
+  </div>
+
+  <!-- holder for the frontend -->
+  <div id='frontend-overlay'></div>
+  <div id='frontend' style='position: absolute; width:95%; top:10px; left:5%; z-index:1000'></div>
+
+  <button id="run-examples">Run example</button>
+  <button id="load-metagraph">Load metagraph</button>
+
+  <div class="example row" id="ex4">
+    <div class="tabs-options span11">
+      <div>
+	<span><a href="#" class="source-tab selected-tab">source</a></span>
+	<span><a href="#" class="data-tab">data</a></span>
+      </div>
+    </div>
+    <div class="row">
+      <div id="ex4-source-tab" class="tab-content source-tab-content span11"></div>
+      <div id="ex4-data-tab" class="tab-content data-tab-content span11" style="display:none"></div>
+    </div>
+  </div>
+
+</body>
+</html>

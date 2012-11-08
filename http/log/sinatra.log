@@ -1,0 +1,58 @@
+/Users/antonio/.rvm/rubies/ruby-1.9.3-p286/lib/ruby/site_ruby/1.9.1/rubygems/custom_require.rb:36:in `require': cannot load such file -- /Users/antonio/Development/Projects/js/lv2/http/server (LoadError)
+	from /Users/antonio/.rvm/rubies/ruby-1.9.3-p286/lib/ruby/site_ruby/1.9.1/rubygems/custom_require.rb:36:in `require'
+	from /Users/antonio/Development/Projects/js/lv2/http/config.ru:10:in `block in <main>'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/lib/rack/builder.rb:51:in `instance_eval'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/lib/rack/builder.rb:51:in `initialize'
+	from /Users/antonio/Development/Projects/js/lv2/http/config.ru:1:in `new'
+	from /Users/antonio/Development/Projects/js/lv2/http/config.ru:1:in `<main>'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/lib/rack/builder.rb:40:in `eval'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/lib/rack/builder.rb:40:in `parse_file'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/lib/rack/server.rb:200:in `app'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/lib/rack/server.rb:301:in `wrapped_app'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/lib/rack/server.rb:252:in `start'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/lib/rack/server.rb:137:in `start'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/bin/rackup:4:in `<top (required)>'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/bin/rackup:23:in `load'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/bin/rackup:23:in `<main>'
+/Users/antonio/.rvm/rubies/ruby-1.9.3-p286/lib/ruby/site_ruby/1.9.1/rubygems/custom_require.rb:36:in `require': cannot load such file -- /Users/antonio/Development/Projects/js/lv2/http/server (LoadError)
+	from /Users/antonio/.rvm/rubies/ruby-1.9.3-p286/lib/ruby/site_ruby/1.9.1/rubygems/custom_require.rb:36:in `require'
+	from /Users/antonio/Development/Projects/js/lv2/http/config.ru:10:in `block in <main>'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/lib/rack/builder.rb:51:in `instance_eval'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/lib/rack/builder.rb:51:in `initialize'
+	from /Users/antonio/Development/Projects/js/lv2/http/config.ru:1:in `new'
+	from /Users/antonio/Development/Projects/js/lv2/http/config.ru:1:in `<main>'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/lib/rack/builder.rb:40:in `eval'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/lib/rack/builder.rb:40:in `parse_file'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/lib/rack/server.rb:200:in `app'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/lib/rack/server.rb:301:in `wrapped_app'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/lib/rack/server.rb:252:in `start'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/lib/rack/server.rb:137:in `start'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/gems/rack-1.4.1/bin/rackup:4:in `<top (required)>'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/bin/rackup:23:in `load'
+	from /Users/antonio/.rvm/gems/ruby-1.9.3-p286/bin/rackup:23:in `<main>'
+/Users/antonio/.rvm/rubies/ruby-1.9.3-p286/lib/ruby/1.9.1/yaml.rb:56:in `<top (required)>':
+It seems your ruby installation is missing psych (for YAML output).
+To eliminate this warning, please install libyaml and reinstall your ruby.
+[2012-11-04 10:53:59] INFO  WEBrick 1.3.1
+[2012-11-04 10:53:59] INFO  ruby 1.9.3 (2012-10-12) [x86_64-darwin10.7.0]
+[2012-11-04 10:53:59] INFO  WEBrick::HTTPServer#start: pid=5472 port=9292
+127.0.0.1 - - [04/Nov/2012 10:55:13] "GET / HTTP/1.1" 404 436 0.0022
+127.0.0.1 - - [04/Nov/2012 10:55:13] "GET /__sinatra__/404.png HTTP/1.1" 200 23305 0.0942
+127.0.0.1 - - [04/Nov/2012 10:55:17] "GET /index.html HTTP/1.1" 200 111 0.0016
+[2012-11-04 10:55:27] INFO  going to shutdown ...
+[2012-11-04 10:55:28] INFO  WEBrick::HTTPServer#start done.
+/Users/antonio/.rvm/rubies/ruby-1.9.3-p286/lib/ruby/1.9.1/yaml.rb:56:in `<top (required)>':
+It seems your ruby installation is missing psych (for YAML output).
+To eliminate this warning, please install libyaml and reinstall your ruby.
+[2012-11-04 10:59:32] INFO  WEBrick 1.3.1
+[2012-11-04 10:59:32] INFO  ruby 1.9.3 (2012-10-12) [x86_64-darwin10.7.0]
+[2012-11-04 10:59:32] INFO  WEBrick::HTTPServer#start: pid=5527 port=9292
+127.0.0.1 - - [04/Nov/2012 10:59:51] "GET /index.html HTTP/1.1" 200 431 0.0067
+127.0.0.1 - - [04/Nov/2012 10:59:51] "GET /js/rdf_store_min.js HTTP/1.1" 200 306721 0.0305
+127.0.0.1 - - [04/Nov/2012 11:01:12] "GET /index.html HTTP/1.1" 200 647 0.0020
+127.0.0.1 - - [04/Nov/2012 11:01:13] "GET /js/rdf_store_min.js HTTP/1.1" 304 - 0.0017
+[2012-11-04 11:01:13] WARN  Could not determine content-length of response body. Set content-length of the response or set Response#chunked = true
+127.0.0.1 - - [04/Nov/2012 11:01:35] "GET /index.html HTTP/1.1" 200 708 0.0014
+127.0.0.1 - - [04/Nov/2012 11:01:36] "GET /js/rdf_store_min.js HTTP/1.1" 200 306721 0.0155
+[2012-11-04 11:02:22] INFO  going to shutdown ...
+[2012-11-04 11:02:22] INFO  WEBrick::HTTPServer#start done.

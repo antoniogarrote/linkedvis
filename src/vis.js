@@ -1,11 +1,77 @@
-var rdfstore = require('rdfstore');
 
 /**
  * Utilities
  */
-Utils = {};
+
+var Counter = {
+    query: 0,
+    building: 0,
+    rendering: 0,
+    metadata: 0
+};
+
+Counter.before = function(kind) {
+    this.kind = kind;
+    this.beforeTime = (new Date()).getTime();
+};
+
+Counter.after = function() {
+    var afterTime = (new Date()).getTime();
+    this[this.kind] += (afterTime - this.beforeTime);
+};
+
+Counter.totalBefore = function() {
+    this.totalTime = (new Date()).getTime();    
+};
+
+Counter.totalAfter = function() {
+    var afterTime = (new Date()).getTime();
+    this.totalTime = afterTime - this.totalTime;
+};
+
+Counter.reset = function() {
+    this.query = 0;
+    this.building = 0;
+    this.rendering = 0;
+    this.totalTime = 0;
+    this.metadata = 0;
+};
+
+Counter.total = function() {
+    return {
+	query: this.query,
+	building: this.totalTime - (this.query+this.rendering),
+	rendering: this.rendering,
+	metadata: this.metadata,
+	total: this.totalTime
+    };
+};
+
+var Utils = {};
 Utils.stackCounterLimit = 1000;
 Utils.stackCounter = 0;
+
+// Browser or node feature detection
+if(typeof(require)==='undefined') {
+    require = function() {};
+    exports = {};
+    Utils.htmlEncode = function(text) {
+	return $('<div/>').text(text).html();
+    }
+    Utils.htmlDecode = function(xml) {
+	return $('<div/>').html(xml).text();
+    }
+} else {
+    rdfstore = require('rdfstore');
+    var htmlencoding = require('./htmlencoding');
+    Utils.htmlEncode = function(text) {
+	return htmlencoding.HTMLEncode(text);
+    }
+    Utils.htmlDecode = function(xml) {
+	return htmlencoding.HTMLDecode(xml);
+    }
+}
+
 
 Utils.recur = function(c){
     if(Utils.stackCounter === Utils.stackCounterLimit) {
@@ -42,11 +108,15 @@ Utils.uniq = function(a, p) {
 };
 
 Utils.map = function(collection, predicate) {
-    var acum = [];
-    for(var i=0; i<collection.length; i++) {
-	acum.push(predicate(collection[i]));
+    if(collection.map) {
+	return collection.map(predicate);
+    } else {
+	var acum = [];
+	for(var i=0; i<collection.length; i++) {
+	    acum.push(predicate(collection[i]));
+	}
+	return acum;
     }
-    return acum;
 };
 
 Utils.findMaxMin = function(nodes, property) {
@@ -68,11 +138,14 @@ Utils.loadElementsIntoContext = function(elementsData, where, context) {
 
     for(var i=0; i<elementsData.length; i++) {
 	if(elementsData[i].toNT != null)
-	    graph.load(elementsData[i].toNT(), "text/n3", function(){});
+	    graph.load("text/n3", elementsData[i].toNT(), function(){});
     }
 };
 
 Utils.genId = function(context) {
+    //console.log("GENERATING ID ");
+    //console.log(context.idGen);
+    //console.log(context);
     return "lvShapeID"+(context.idGen++);
 };
 
@@ -88,6 +161,14 @@ Utils.genLayerId = function(context, layer) {
 	context.totalLayers++;
 	layerCounter = context.totalLayers;
 	layer.id = "layerID"+layerCounter;
+    }
+};
+
+Utils.IdToURI = function(id, sub) {
+    if(sub != null) {
+	return LinkedVis.PREFIX.split("/vocab")[0] + sub + id;
+    } else {
+	return LinkedVis.PREFIX + id; 
     }
 };
 
@@ -228,7 +309,7 @@ Color.gradient = function(colour_1, colour_2, increments) {
     }
      
     return gradient_colours;
-}
+};
 
 
 
@@ -267,7 +348,7 @@ Layer.prototype.bind = function(type, bindings) {
 		    tmp = {'rdfProperty': val};
 		}
 	    } else {
-		tmp = {'val': val}
+		tmp = {'val': val};
 	    }
 
 	    keys.push(p);
@@ -280,9 +361,35 @@ Layer.prototype.bind = function(type, bindings) {
     return this;
 };
 
+Layer.prototype.stackLayer = function(cb) {
+    var layer = new Layer(this.struct, this.graph, this.bounds);
+    this.layers = this.layers || [];
+    this.layers.push(layer);
+    cb(layer);
+    return this;
+};
+
+Layer.prototype.theme = function(themeData) {
+    themeData.rendered = false;
+    this.themeData = themeData;
+
+    var clonedBounds = {};
+    for(var p in this.bounds)
+	this.themeData[p] = this.bounds[p];
+
+    return this;
+};
 
 Layer.prototype.layout = function(layout) {
     this.layout = layout;
+    return this;
+};
+
+Layer.prototype.nestLayer = function(f) {
+    // graph and bounds will be set in the render function
+    var layer = new Layer();
+    f(layer);
+    this.nested = layer;
     return this;
 };
 
@@ -292,16 +399,22 @@ Layer.prototype.resolveProps = function(type, elements, context) {
     if(this.bindingsKeys[type] == null) 
 	throw "Cannot find bindings for elements of type '"+type+"'";
 
-    console.log("SOLVING PROPS FOR "+elements.length);
+    //console.log("SOLVING PROPS FOR "+elements.length);
     var that = this, shape, floop, resolved, rdfProps;
     var shapes = [], key, prop;
+
+    // 1.- First loop resolve RDF props bound to some property using the visualization
+    //     associated RDF graph
+
     for(var i=0; i<elements.length; i++) {
+
 	// Check if this is a node in a tree data structure
 	if(elements[i]['$type'] === 'treenode') {
 	    var tmp = elements[i];
 	    elements[i] = elements[i]['node'];
 	    elements[i].treeNode = tmp;
 	}
+
 	//if(elements[i]['$type'] === 'graphnode') {
 	//    var tmp = elements[i];
 	//    elements[i] = elements[i]['node'];
@@ -312,24 +425,29 @@ Layer.prototype.resolveProps = function(type, elements, context) {
 	    // @TODO: use layer ID to generate an unique URI for the shape
 	    shape = new Shape();
 	    if(this.bindings[type]['id'] == null)
-		shape.id = {'value':Utils.genId(shape, context)}
+		shape.id = Utils.genId(context);
 	    shape.isGroup = true;
 	    shape.graph = elements[i];
 	    shape.graph.rdf = that.graph.rdf;
+	    // information for the visualization meta-graph will be stored here
+	    shape.metadata = {};
 	    shape.rdfProps = {};
 
 	    for(var p in shape['graph']) {
 		if(p.indexOf("lv:") !== -1)
 		    shape.rdfProps[p] = shape['graph'][p];
+		else if(p === 'id')
+		    shape.rdfProps['lv:id'] = shape['graph'][p];
 	    }
 
 
-	    console.log("RDF PROPS NOW");
-	    console.log(shape.rdfProps);
+	    //console.log("RDF PROPS NOW");
+	    //console.log(shape.rdfProps);
 
 	    for(var j=0; j<that.bindingsKeys[type].length; j++) {
 		key = that.bindingsKeys[type][j];
 		prop = that.bindings[type][key];
+		// process aggregator functions for groups
 		if(prop['rdfProperty'] != null && prop['rdfProperty'].indexOf("lv:") != 0) {
 		    var aggregator = prop['aggregate'] || 'lv:average';
 		    resolved = (that.graph.rdf.resolve(prop['rdfProperty']) || prop['rdfProperty']);
@@ -342,10 +460,10 @@ Layer.prototype.resolveProps = function(type, elements, context) {
 			       acum = (acum || 0) + match[0].object.valueOf();
 			    } else if(aggregator === 'lv:min') {
 				if(acum == null || acum > match[0].object.valueOf())
-				    acum = match[0].object.valueOf()
+				    acum = match[0].object.valueOf();
 			    } else if(aggregator === 'lv:max') {
 				if(acum == null || acum < match[0].object.valueOf())
-				    acum = match[0].object.valueOf()
+				    acum = match[0].object.valueOf();
 			    }
 			}
 		    }
@@ -354,23 +472,49 @@ Layer.prototype.resolveProps = function(type, elements, context) {
 			acum = acum / shape.graph.nodes.length;
 
 		    shape.rdfProps[resolved] = acum;
+
+		    // @TODO: it should be possible to disable the computation and generation of meta-graph data
+		    meta = {prop: key,
+			    type: 'ShapeAttribute',
+			    boundTo: resolved,
+			    value: acum,
+			    aggregated: aggregator};
+		    //console.log("ADDING METADATA KEY: "+key);
+		    shape.metadata[key] = meta;
+		} else if(prop['rdfProperty'] != null) {
+		    resolved = (that.graph.rdf.resolve(prop['rdfProperty']) || prop['rdfProperty']);
+		    shape.metadata[key] = {prop: key,
+					   type: 'ShapeAttribute',
+					   boundTo: resolved,
+					   value: shape.rdfProps[resolved]};
 		}
 	    }
+	    
 	    //console.log("THE SHAPE");
 	    //console.log(shape);
 	    shapes.push(shape);
 	} else {
 	    shape = new Shape(elements[i].nodeURI);
 	    if(this.bindings[type]['id'] == null)
-		shape.id = {'value':Utils.genId(shape, context)}
-	    shape.id = {'value':Utils.genId(context)}
+		shape.id = Utils.genId(context);
+	    else
+		shape.id = this.bindings[type]['id'];
+
 	    shape.graph = elements[i];
+	    shape.metadata = {};
 	    shape.isGroup = false;
 	    shape.graph.rdf = that.graph.rdf;
 	    shape.rdfProps = {};
 	    for(var p in shape.graph) {
-		if(p.indexOf("lv:") !== -1)
+		if(p.indexOf("lv:") !== -1) {
 		    shape.rdfProps[p] = shape.graph[p];
+		    //// @TODO: it should be possible to disable the computation and generation of meta-graph data
+		    //meta = {type: 'LinkedVisProperty',
+		    // 	    prop: p,
+		    // 	    value: shape.rdfProps[p]};
+		    ////console.log("ADDING METADATA KEY: "+key);
+		    //shape.metadata[key] = meta;
+		}
 	    }
 
 	    for(var j=0; j<that.bindingsKeys[type].length; j++) {
@@ -378,9 +522,28 @@ Layer.prototype.resolveProps = function(type, elements, context) {
 		prop = that.bindings[type][key];
 		if(prop['rdfProperty'] != null) {
 		    resolved = that.graph.rdf.resolve(prop['rdfProperty']) || prop['rdfProperty'];
-		    var match = shape.graph.match(null, resolved, null, 1).toArray();
-		    if(match.length === 1)
-			shape.rdfProps[resolved] = match[0].object.valueOf();
+		    if(shape.rdfProps[resolved]) {
+			meta = {prop: key,
+				type: 'ShapeAttribute',
+				boundTo: resolved,
+				value: shape.rdfProps[resolved]};
+			//console.log("ADDING METADATA KEY: "+key);
+			shape.metadata[key] = meta;
+		    } else {
+			var match =  shape.graph.match(null, resolved, null, 1).toArray();
+			if(match.length === 1) {
+			    shape.rdfProps[resolved] = match[0].object.valueOf();
+
+			    // @TODO: it should be possible to disable the computation and generation of meta-graph data
+			    meta = {prop: key,
+				    type: 'ShapeAttribute',
+				    boundTo: resolved,
+				    value: shape.rdfProps[resolved]};
+			    //console.log("ADDING METADATA KEY: "+key);
+			    shape.metadata[key] = meta;
+			}
+
+		    }
 		}
 	    }
 
@@ -388,7 +551,10 @@ Layer.prototype.resolveProps = function(type, elements, context) {
 	}
 
     }
-    // Got all the shapes + associated RDF nodes data
+    // Got all the shapes + associated RDF nodes data at this point
+
+
+    // 2.- Now we generate scales for the bound properties where needed
     var scalesKeys = [];
     var regularKeys = [];
 
@@ -403,35 +569,75 @@ Layer.prototype.resolveProps = function(type, elements, context) {
 
     that.scales = that.processScales(type, scalesKeys, shapes, that.graph);
 
+
+    // 3.- Finally compute the final bound values for the bound properties
+    var actualValue, metadata, origValue;
     for(j=0; j<shapes.length; j++) {
 	shape = shapes[j];
-	console.log("THE SHAPE");
-	console.log(shape);
+	//console.log("THE SHAPE");
+	//console.log(shape);
 	for(i=0; i<regularKeys.length; i++) {
 	    key = regularKeys[i];
 	    prop = that.bindings[type][key];
-	    console.log("KEY");
-	    console.log(key);
+	    //console.log("KEY");
+	    //console.log(key);
+	    metadata = shape.metadata[key];
+	    if(metadata == null) {
+		metadata = {prop: key,
+			type: 'ShapeAttribute'};
+		shape.metadata[key] = metadata;
+
+	    }
 	    if(prop['val'] != null) {
 		shape.setProp(key, prop['val']);
+		shape.metadata[key].value = prop['val'];
+		shape.metadata[key].canvasValue = prop['val'];
+		shape.metadata[key].scaled = false;
 	    } else if(prop['function']  != null) {
-		shape.setProp(key, prop['function'](shape.graph, j));		
+		actualValue = prop['function'](shape, shape.graph, j);
+		shape.setProp(key, actualValue);		
+		shape.metadata[key].value = actualValue;
+		shape.metadata[key].canvasValue = actualValue;
+		shape.metadata[key].scaled = false;
 	    } else if(prop['rdfProperty'] != null) {
 		resolved = that.graph.rdf.resolve(prop['rdfProperty']) || prop['rdfProperty'];
-		shape.setProp(key, shape.rdfProps[resolved]);
+		actualValue = shape.rdfProps[resolved];
+		shape.setProp(key, actualValue);
+		shape.metadata[key].canvasValue = actualValue;
+		shape.metadata[key].value = shape.rdfProps[resolved];
+		shape.metadata[key].scaled = false;
 	    }
 	}
 	for(i=0; i<scalesKeys.length; i++) {
 	    key = scalesKeys[i];
 	    prop = that.bindings[type][key];
 	    scale = that.scales[key];
+	    if(metadata == null) {
+		metadata = {prop: key,
+			type: 'ShapeAttribute'};
+		shape.metadata[key] = metadata;
+
+	    }
 	    if(prop['val'] != null) {
-		shape.setProp(key, scale.apply(prop['val']));
-	    } else if(prop['function']  != null) {
-		shape.setProp(key, prop['function'](shape.graph, j));		
+		actualValue = scale.apply(prop['val']);
+		shape.setProp(key, actualValue);
+		shape.metadata[key].value = prop['val'];
+		shape.metadata[key].canvasValue = actualValue;
+		shape.metadata[key].scaled = true;
+	    } else if(prop['function']  != null) {		
+		origValue = prop['function'](shape, shape.graph, j);
+		actualValue = scale.apply(origValue);
+		shape.setProp(key, actualValue);		
+		shape.metadata[key].value = origValue;
+		shape.metadata[key].canvasValue = actualValue;
+		shape.metadata[key].scaled = true;
 	    } else if(prop['rdfProperty'] != null) {
 		resolved = that.graph.rdf.resolve(prop['rdfProperty']) || prop['rdfProperty'];
-		shape.setProp(key, scale.apply(shape.rdfProps[resolved]));
+		actualValue = scale.apply(shape.rdfProps[resolved]);
+		shape.setProp(key, actualValue);
+		shape.metadata[key].value = shape.rdfProps[resolved];
+		shape.metadata[key].canvasValue = actualValue;		
+		shape.metadata[key].scaled = true;
 	    }
 	}
     }
@@ -444,9 +650,9 @@ Layer.prototype.processScales = function(type, keys, shapes, graph) {
     var scales = {}, key;
     for(var i=0; i<keys.length; i++) {
 	key = keys[i];
-	console.log("BUILDING SCALE");
-	console.log(shapes.length);
-	scales[key] = this.layout.buildScale(key, this.bounds, this.bindings[type][key], shapes, graph)
+	//console.log("BUILDING SCALE");
+	//console.log(shapes.length);
+	scales[key] = this.layout.buildScale(key, this.bounds, this.bindings[type][key], shapes, graph);
     }
 
     return scales;
@@ -457,19 +663,30 @@ Layer.prototype.render = function(doc, context, cb) {
 
     var parentLayerId = this.layer;
     Utils.genLayerId(context, this);
+    context.currentLayer = this.id;
+    context.layersMap[this.id] = this;
 
     // XML SVG for the layer -> rendered as a SVG group, it makes it possible to add a meta element
     doc = doc + "<g id='" + this.id + "' class='lv_layer'>";
 
+    if(this.themeData) {
+	this.bounds = this.layout.reshapeForTheme(this.bounds, this.themeData);
+	if(this.layers != null) {
+	    for(var i=0; i<this.layers.length; i++)
+		layers[i].bounds = this.bounds;
+	}
+    }
+
     this.struct.execute(this.graph, function(success, elementsData){
 
-	if(elementsData.constructor === 'Array')
+	if(elementsData.constructor === Array)
 	    elementsData = {'nodes': elementsData};
 
 	var shapes = {}, tmpShapes;
+
 	for(var type in elementsData) {
 	    elements = elementsData[type];
-	    console.log("STRUCT RETURNS "+elements.length+" ELEMENTS");
+	    //console.log("STRUCT RETURNS "+elements.length+" ELEMENTS");
 
 	    // Load elements in visualization data graph
 	    Utils.loadElementsIntoContext(elements, 'datagraph', context);
@@ -477,22 +694,29 @@ Layer.prototype.render = function(doc, context, cb) {
 	    // Create additional layers according to the computed data structure
 	    that.layout.rearrange(type,elements, that.struct, that, context);
 
-	    console.log("REARRANGED");
+	    //console.log("REARRANGED");
 
 	    // Compute values and scales for the shapes in this layer
 	    tmpShapes = that.resolveProps(type, elements, context);
 
-	    console.log("RESOLVED");
+	    //console.log("RESOLVED");
 
 	    shapes[type] = tmpShapes;
 	}
-
+	
 	// Compute positions
 	var bounds = that.bounds;
 	shapes = that.layout.position(shapes, bounds, context);
+	this.shapes = shapes;
+
+	// Render theme
+	if(that.themeData != null) {
+	    doc = that.layout.renderTheme(doc, that.themeData);
+	}
 
 	// Shape rendering
 	for(var i=0; i<shapes.length; i++) {
+	    context.shapesMap[shapes[i].id] = shapes[i];
 	    doc = shapes[i].render(doc, context);
 	}
 
@@ -500,7 +724,8 @@ Layer.prototype.render = function(doc, context, cb) {
 	    // Render additional layers at this level
 	    if((this.layers || []).length > 0) {
 		var nextLayer = this.layers.shift();
-		nextLayer.layers = this.layers;
+		nextLayer.layers = nextLayer.layers || [];
+		nextLayer.layers = nextLayer.layers.concat(this.layers);
 		nextLayer.id = parentLayerId;
 		nextLayer.render(doc, context, function(success, doc) {
 		    cb(success, doc);
@@ -517,11 +742,19 @@ Layer.prototype.render = function(doc, context, cb) {
 	// Render nested levels layers
 
 	if(that.nested) {
+	    var shouldSetStruct = (that.nested.struct == null);
 	    Utils.repeat(0, shapes.length, function(k, env) {
 		var floop = arguments.callee;
 		setTimeout(function() {
-		    that.nested.graph = shapes[env._i].graph;
+		    that.nested.graph = that.graph;
+		    //console.log("NESTED BOUNDS");
+		    //console.log(shapes[env._i]);
+		    //console.log(shapes[env._i].bounds);
 		    that.nested.bounds = shapes[env._i].bounds;
+		    if(shouldSetStruct) {
+			//console.log("SETTING GRAPH");
+			that.nested.struct = new Node(shapes[env._i].graph);
+		    }
 		    that.nested.id = that.id;
 		    that.nested.render(doc, context, function(success, nextDoc) {
 			doc = nextDoc;
@@ -556,13 +789,23 @@ Shape.prototype.setProp = function(prop, value) {
     }
 };
 
+Shape.prototype.attributes = function(bindings) {
+
+    var domElem = Sizzle("#"+this.id);
+    for(var prop in bindings) {
+	this.properties[prop] = bindings[prop];
+	domElem[0].setAttribute(prop, bindings[prop]);
+    }
+    return this;
+};
+
 Shape.prototype.render = function(doc, context) {
     if(this.properties['shape'] === 'rect') {
 	doc = doc + "<"+(this.properties['shape'])+" ";
 
 
-	if(this.id != null && this.id.value != null)
-	    doc = doc + "id='"+this.id.value+"' ";
+	if(this.id != null)
+	    doc = doc + "id='"+this.id+"' ";
 	
 	if(this.uri != null && this.uri.value != null)
 	    doc = doc + "about='"+this.uri.value+"' ";
@@ -578,13 +821,16 @@ Shape.prototype.render = function(doc, context) {
 	if(this.rdfProps != null && this.graph.match) 
 	    doc = doc + "<meta>"+this.buildRDF(context)+"</meta>";
 
+	if(this.rdfProps != null && this.graph.match) 
+	    doc = doc + "<meta>"+this.buildRDF(context)+"</meta>";
+
 	doc = doc + "</"+(this.properties['shape'])+">";
     } else if(this.properties['shape'] === 'line') {
 	doc = doc + "<"+(this.properties['shape'])+" ";
 
 
-	if(this.id != null && this.id.value != null)
-	    doc = doc + "id='"+this.id.value+"' ";
+	if(this.id != null)
+	    doc = doc + "id='"+this.id+"' ";
 	
 	if(this.uri != null && this.uri.value != null)
 	    doc = doc + "about='"+this.uri.value+"' ";
@@ -604,8 +850,8 @@ Shape.prototype.render = function(doc, context) {
     } else if(this.properties['shape'] === 'text') {
 	doc = doc + "<"+(this.properties['shape'])+" ";
 
-	if(this.id != null && this.id.value != null)
-	    doc = doc + "id='"+this.id.value+"' ";
+	if(this.id != null)
+	    doc = doc + "id='"+this.id+"' ";
 
 	if(this.uri != null && this.uri.value != null)
 	    doc = doc + "about='"+this.uri.value+"' ";
@@ -620,15 +866,16 @@ Shape.prototype.render = function(doc, context) {
 
 	doc = doc + this.properties['content'];
 
-	if(this.rdfProps != null && this.graph.match) 
-	    doc = doc + "<meta>"+this.buildRDF(context)+"</meta>";
+	// @TODO: find a way to insert meta information for a text element
+	//if(this.rdfProps != null && this.graph.match) 
+	//    doc = doc + "<meta>"+this.buildRDF(context)+"</meta>";
 
 	doc = doc + "</"+(this.properties['shape'])+">";
     } else if(this.properties['shape'] === 'circle') {
 	doc = doc + "<"+(this.properties['shape'])+" ";
 
-	if(this.id != null && this.id.value != null)
-	    doc = doc + "id='"+this.id.value+"' ";
+	if(this.id != null)
+	    doc = doc + "id='"+this.id+"' ";
 
 	if(this.uri != null && this.uri.value != null)
 	    doc = doc + "about='"+this.uri.value+"' ";
@@ -648,8 +895,8 @@ Shape.prototype.render = function(doc, context) {
     } else if(this.properties['shape'] === 'path') {
 	doc = doc + "<"+(this.properties['shape'])+" ";
 
-	if(this.id != null && this.id.value != null)
-	    doc = doc + "id='"+this.id.value+"' ";
+	if(this.id != null)
+	    doc = doc + "id='"+this.id+"' ";
 
 	if(this.uri != null && this.uri.value != null)
 	    doc = doc + "about='"+this.uri.value+"' ";
@@ -670,10 +917,11 @@ Shape.prototype.render = function(doc, context) {
     return doc;
 };
 
-Shape.prototype.buildRDF = function(context) {
-    console.log("BUILDING RDF");
-    console.log(this);
-    console.log("==================");
+Shape.prototype.buildRDF = function(context, kind) {
+    //console.log("BUILDING RDF");
+    //console.log(this);
+    //console.log("==================");
+    /*
     var ns = {}, shrinked, expanded, p;
     var type = this.graph.match(null, "http://www.w3.org/1999/02/22-rdf-syntax-ns#type", null, 1).toArray();
 
@@ -691,7 +939,7 @@ Shape.prototype.buildRDF = function(context) {
      	type = "rdf:Description";
     }
 
-    rdf = rdf + "<"+type+" rdf:about=\""+this.id.value+"\">";
+    rdf = rdf + "<"+type+" rdf:about=\"http://linkedvis.org/ids#"+this.id+"\">";
     for(p in this.rdfProps) {
 	expanded = this.graph.rdf.resolve(p) || p;
 	expanded = expanded || p;
@@ -708,6 +956,60 @@ Shape.prototype.buildRDF = function(context) {
     rdf = preamble + rdf + "</rdf:RDF>";
 
     return rdf;
+    */
+    
+    Counter.before('metadata')
+    var ns = {}, shrinked, expanded, p;
+    var n3 = "\n";
+    var uri = "http://linkedvis.org/ids#"+this.id;
+    n3 = n3 + "<" + uri + "> a  lv:Shape;\n";
+    n3 = n3 + " a svg:"+this.properties['shape']+";";
+
+    if(this.uri != null && this.uri.value != null)
+	n3 = n3 + " lv:boundToResource <"+ this.uri.value + ">;\n";
+
+    if(context.currentLayer != null)
+	n3 = n3 + " lv:inLayer <"+Utils.IdToURI(context.currentLayer, "/ids#") + ">;\n";
+
+    var metadata;
+    if(this.metadata) {
+	var first = true;
+	for(var p in this.metadata) {
+	    metadata = this.metadata[p];
+	    if(metadata.prop != 'shape') {
+		if(!first) 
+		    n3 = n3 + ";\n";
+		else
+		    first = false;
+
+		n3 = n3 + " lv:hasProperty [\n";
+
+		n3 = n3 + "\t lv:propertyName \"" + metadata.prop + "\";\n";
+		n3 = n3 + "\t a lv:" + metadata.type + ";\n";
+		if(metadata.boundTo != null)
+		    n3 = n3 + "\t lv:boundToProperty <"+metadata.boundTo+">;\n";
+		if(metadata.aggregated != null)
+		    n3 = n3 + "\t lv:usesAggregator "+metadata.aggregated + ";\n";
+		if(metadata.value != null)
+		    n3 = n3 + "\t lv:value \""+metadata.value + "\";\n";
+		if(metadata.canvasValue != null)
+		    n3 = n3 + "\t lv:canvasValue \""+metadata.canvasValue + "\";\n";
+		if(metadata.scaled != null)
+		    n3 = n3 + "\t lv:isScaled \""+metadata.scaled + "\";\n";
+
+		n3 = n3 + "]";
+	    }
+	}
+
+	if(!first)
+	    n3 = n3 +".\n";
+    } 
+
+    n3  = "@prefix svg: <http://www.svg.org/> .\n@prefix lv: <http://www.linkedvis.org/vocab/> ." + n3;
+
+   n3 =  "<lv:metagraph format='text/n3'>"+Utils.htmlEncode(n3)+"</lv:metagraph>";
+    Counter.after();
+    return n3;
 };
 
 Shape.prototype.renderPosition = function(doc) {
@@ -722,8 +1024,11 @@ Shape.prototype.renderPosition = function(doc) {
 	if(this.bounds['height'] != null)
 	    doc = doc + " height='"+ this.bounds['height'] + "'";
     } else if(this.properties['shape'] === 'text') {
-	if(this.bounds['x'] != null)
+	if(this.bounds['x'] != null && this.bounds['width'] == null)
 	    doc = doc + " x='"+ this.bounds['x'] + "'";
+	else if(this.bounds['x'] != null && this.bounds['width'] != null)
+	    doc = doc + " x='"+ (this.bounds['x']+ (this.bounds['width']/2)) + "' text-anchor='middle'";
+	    
 	if(this.bounds['y'] != null)
 	    doc = doc + " y='"+ this.bounds['y'] + "'";
 	if(this.bounds['height'] != null)
@@ -770,8 +1075,21 @@ var ContinousScale = function(domainMax, domainMin, rangeMax,rangeMin) {
     this.domain = this.domainMax - this.domainMin;
 };
 
+ContinousScale.prototype.partition = function(partitions) {
+    partitions = partitions || 10;
+    var quantum = (this.domain/partitions), upto=(this.domainMin+quantum);
+    var acum = [];
+    while(upto<this.domainMax) {
+	acum.push({'domain': upto, 'range':this.apply(upto)});
+	upto = upto + quantum;
+    }
+    
+    return acum;
+};
+
 ContinousScale.prototype.apply = function(v) {
     var scale = (v - this.domainMin) / this.domain;
+
     //console.log(v+" scale "+ scale +" ---> "+(this.rangeMin + (scale * this.range)));
     return this.rangeMin + (scale * this.range);
 };
@@ -779,31 +1097,31 @@ ContinousScale.prototype.apply = function(v) {
 // Register the scale
 Scale['continous'] = ContinousScale;
 
-var HueScale = function(categories) {
-    var colors = Color.categories(categories.length);
-    this.mapping = {};
-    for(var i=0; i<categories.length; i++)
-	this.mapping[categories[i]] = colors[i];
-};
-
-HueScale.prototype.apply = function(v) {
-    return this.mapping[v];
-};
-
-
 var ProportionalScale = function(total, rangeMax,rangeMin) {
-    console.log("TOTAL "+total);
-    console.log("RANGE MAX "+rangeMax)
-    console.log("RANGE MIN "+rangeMin)
+    //console.log("TOTAL "+total);
+    //console.log("RANGE MAX "+rangeMax)
+    //console.log("RANGE MIN "+rangeMin)
     this.range = rangeMax - rangeMin;
     this.rangeMin = rangeMin;
     this.domain = total;
 };
 
+ProportionalScale.prototype.partition = function(partitions) {
+    partitions = partitions || 10;
+    var quantum = (this.domain/partitions), upto=quantum;
+    var acum = [];
+    while(upto<this.domain) {
+	acum.push({'domain': upto, 'range':this.apply(upto)});
+	upto = upto + quantum;
+    }
+    
+    return acum;
+};
+
 ProportionalScale.prototype.apply = function(v) {
     var scale = v / this.domain;
-    console.log(this.rangeMin);
-    console.log(this.range);
+    //console.log(this.rangeMin);
+    //console.log(this.range);
     //console.log(v+" scale "+ scale +" ---> "+(this.rangeMin + (scale * this.range)));
     //return this.rangeMin + (scale * this.range);
     return (scale * this.range);
@@ -867,6 +1185,7 @@ Layout.build = function(name, opts) {
 // Horizontal layout
 var HorizontalLayout  = function(opts) {
     this.opts = opts || {};
+    this.scales = {};
 };
 // Registering the layout
 Layout.register('Horizontal', HorizontalLayout);
@@ -897,7 +1216,9 @@ HorizontalLayout.prototype.buildScale = function(key, bounds, scale, shapes, gra
 	var rangeMin = scale['rangeMin'] || this.getRangeMin(key, bounds);
 	var rangeMax = scale['rangeMax'] || this.getRangeMax(key, bounds);
 
-	return new Scale['continous'](domainMax, domainMin, rangeMax, rangeMin);
+	scale = new Scale['continous'](domainMax, domainMin, rangeMax, rangeMin);
+	this.scales[prop] = scale;
+	return scale;
 	
     } else if(scale['scale'] === 'gradient') {
 	var domainMin = scale['domainMin'] || null;
@@ -922,24 +1243,27 @@ HorizontalLayout.prototype.buildScale = function(key, bounds, scale, shapes, gra
 	return new Scale['gradient'](domainMax, domainMin, rangeMax, rangeMin);
 
     } else if(scale['scale'] === 'proportional') {
-	console.log("PROPORTIONAL SCALE HORIZ");
+	//console.log("PROPORTIONAL SCALE HORIZ");
 	var acum = 0;
 
 	var rdfProperty = graph.rdf.resolve(prop) || prop;
-	console.log("PROPERTY: "+rdfProperty);
-	var values = Utils.map(shapes, function(shape){ console.log(rdfProperty); console.log(shape.rdfProps); return shape.rdfProps[rdfProperty]; });
-	console.log("VALUES");
-	console.log(values);
+	//console.log("PROPERTY: "+rdfProperty);
+	var values = Utils.map(shapes, function(shape){ return shape.rdfProps[rdfProperty]; });
+	//console.log("VALUES");
+	//console.log(values);
 	for(var i=0; i<values.length; i++)
 	    acum = acum + values[i];
 
 	var rangeMin = scale['rangeMin'] || this.getRangeMin(key, bounds);
 	var rangeMax = scale['rangeMax'] || this.getRangeMax(key, bounds);
 
-	console.log("ACUM "+acum);
-	console.log("RANGE MAX "+rangeMax);
-	console.log("RANGE MIN "+rangeMin);
-	return new Scale['proportional'](acum, rangeMax, rangeMin);
+	//console.log("ACUM "+acum);
+	//console.log("RANGE MAX "+rangeMax);
+	//console.log("RANGE MIN "+rangeMin);
+
+	scale = new Scale['proportional'](acum, rangeMax, rangeMin);
+	this.scales[prop] = scale;
+	return scale;
 
     } else if(scale['scale'] === 'hue') {
 	prop = graph.rdf.resolve(prop) || prop;
@@ -970,17 +1294,109 @@ HorizontalLayout.prototype.getRangeMax = function(key, bounds) {
     if(key === 'height' || key === 'y') {
 	return bounds['y'] + bounds['height'];
     } else if(key === 'width' || key === 'x' || key === 'size') {
-	return bounds['x'] + bounds['width'];	    
+	return bounds['x'] + (bounds['width']||bounds['size']);	    
     }
 };
 
+HorizontalLayout.prototype.reshapeForTheme = function(bounds, themeData) {
+    if(themeData.title) {
+	bounds['y'] = bounds['y'] + 40
+	if(bounds['height'] != null)
+	    bounds['height'] = bounds['height'] - 40;
+    }
+
+    if(themeData.axis) {
+	if(themeData.axis.x) {
+	    if(bounds['height'] != null)
+		bounds['height'] = bounds['height'] - 20;
+	}
+
+	if(themeData.axis.y) {
+	    bounds['x'] = bounds['x'] + 50;
+	    if(bounds['width'] != null)
+		bounds['width'] = bounds['width'] - 50;
+	}
+    }
+
+    return bounds;
+}
+
+HorizontalLayout.prototype.renderTheme = function(doc, themeData) {
+    if(themeData != null) {
+	if(themeData.title != null); {
+	    doc = doc + "<text font-size=\"20\" text-anchor=\"middle\" x=\""+(themeData.width/2)+"\" y=\""+(themeData.y+20)+"\">"+(themeData.title.content || themeData.title)+"</text>";
+	}
+    }
+
+    var xScale,yScale;
+
+    if(themeData.axis) {
+	if(themeData.axis.x) {
+	    var scale = this.scales[themeData.axis.x];
+	    if(scale == null) {
+		throw("Cannot compute axis in theme because scale for property "+themeData.axis.x+" was not generated");
+	    } else {
+		var marks = scale.partition()
+	    }
+
+	    var y = (themeData['y']+themeData['height']-20);
+	    var x1 = (themeData['x']+50);
+	    var x2 = (themeData['x']+themeData['width']);
+	    doc = doc + "<line x1=\""+x1+"\" y1=\""+y+"\" x2=\""+x2+"\" y2=\""+y+"\" fill=\"none\" stroke=\"#000000\" stroke-width=\"1\"></line>";
+	    for(var i=0; i<marks.length; i++) {
+		var domain = marks[i].domain;
+		var range = marks[i].range;
+
+		var x = (themeData['x'] + range + 50);
+		var y1 = (themeData['y']+themeData['height']-20);
+		var y2 = (themeData['y']+themeData['height']-20+5);
+
+		doc = doc + "<line x1=\""+x+"\" y1=\""+y1+"\" x2=\""+x+"\" y2=\""+y2+"\" fill=\"none\" stroke=\"black\" stroke-width=\"1\"></line>";
+		doc = doc + "<text font-size=\"10\" x=\""+x+"\" y=\""+(y2+10)+"\" text-anchor=\"middle\">"+domain.toFixed(2)+"</text>";
+	    }
+	}
+
+	if(themeData.axis.y) {
+	    var scale = this.scales[themeData.axis.y];
+	    if(scale == null) {
+		throw("Cannot compute axis in theme because scale for property "+themeData.axis.x+" was not generated");
+	    } else {
+		marks = scale.partition().reverse();
+	    }
+
+	    var xAxisOffset = 20;
+	    if(themeData.axis.x == null)
+		xAxisOffset = 0;
+
+	    y1 = (themeData['y']+40);
+	    y2 = (themeData['y']+themeData['height']-xAxisOffset);
+	    x = (themeData['x']+50);
+	    doc = doc + "<line x1=\""+x+"\" y1=\""+y1+"\" x2=\""+x+"\" y2=\""+y2+"\" fill=\"none\" stroke=\"#000000\" stroke-width=\"1\"></line>";
+	    for(var i=0; i<marks.length; i++) {
+		domain = marks[i].domain;
+		range = marks[i].range;
+
+		x1 = (themeData['x'] + 50);
+		x2 = (themeData['x'] + 50 - 5);
+		y = (themeData['y']+themeData['height']-xAxisOffset-range);
+
+		doc = doc + "<line x1=\""+x1+"\" y1=\""+y+"\" x2=\""+x2+"\" y2=\""+y+"\" fill=\"none\" stroke=\"black\" stroke-width=\"1\"></line>";
+		doc = doc + "<text font-size=\"10\" x=\""+(x2-30)+"\" y=\""+y+"\" text-anchor=\"middle\">"+domain.toFixed(2)+"</text>";
+	    }
+	}
+    }
+
+    return doc;
+};
+
 HorizontalLayout.prototype.position = function(shapes, bounds, context) {
+
     shapes = shapes['nodes'];
     var perElement = (bounds['width'] || bounds['size']) / shapes.length;
     var x,y,shape, shapeBounds, height, width;
     var acum = [];
-    console.log("HORIZONTAL LAYOUT BOUNDS");
-    console.log(bounds);
+    //console.log("HORIZONTAL LAYOUT BOUNDS");
+    //console.log(bounds);
 
     // horizontal align
     if(this.opts['align'] === 'right') {
@@ -1003,8 +1419,8 @@ HorizontalLayout.prototype.position = function(shapes, bounds, context) {
 	for(var i=0; i<shapes.length; i++) {
 	    shape = shapes[i];
 	    shapeBounds = {};
-	    console.log("SHAPE POSITION BINDINGS");
-	    console.log(shape.positionBindings);
+	    //console.log("SHAPE POSITION BINDINGS");
+	    //console.log(shape.positionBindings);
 	    width = (shape.positionBindings['width'] || shape.positionBindings['size']);
 
 	    shapeBounds['width'] = width || perElement;
@@ -1038,6 +1454,11 @@ HorizontalLayout.prototype.position = function(shapes, bounds, context) {
     return acum;
 };
 
+HorizontalLayout.prototype.theme = function(themeData) {
+    this.themeData = themeData;
+    return this;
+};
+
 HorizontalLayout.prototype.rearrange = function(type, elements, struct, layer, context) {
     // nothing to do here
 };
@@ -1047,7 +1468,6 @@ HorizontalLayout.prototype.rearrange = function(type, elements, struct, layer, c
 var VerticalLayout  = function(opts) {
     this.opts = opts || {};
 };
-
 
 // Registering the layout
 Layout.register('Vertical', VerticalLayout);
@@ -1103,7 +1523,7 @@ VerticalLayout.prototype.buildScale = function(key, bounds, scale, shapes, graph
 	return new Scale['gradient'](domainMax, domainMin, rangeMax, rangeMin);
 
     } else if(scale['scale'] === 'proportional') {
-	console.log("PROPORTIONAL SCALE VERT");
+	//console.log("PROPORTIONAL SCALE VERT");
 	var acum = 0;
 
 	var rdfProperty = graph.rdf.resolve(prop) || prop;
@@ -1114,9 +1534,9 @@ VerticalLayout.prototype.buildScale = function(key, bounds, scale, shapes, graph
 	var rangeMin = scale['rangeMin'] || this.getRangeMin(key, bounds);
 	var rangeMax = scale['rangeMax'] || this.getRangeMax(key, bounds);
 
-	console.log("ACUM "+acum);
-	console.log("RANGE MAX "+rangeMax);
-	console.log("RANGE MIN "+rangeMin);
+	//console.log("ACUM "+acum);
+	//console.log("RANGE MAX "+rangeMax);
+	//console.log("RANGE MIN "+rangeMin);
 	return new Scale['proportional'](acum, rangeMax, rangeMin);
 
 	return new Scale['proportional'](acum, rangeMax, rangeMin);
@@ -1169,7 +1589,7 @@ VerticalLayout.prototype.position = function(shapes, bounds, context) {
 	    height = (shape.positionBindings['height'] || shape.positionBindings['size']);
 	
 	    shapeBounds['height'] = height || perElement;
-	    y = y - shapeBounds['height'];
+	    // y = y - shapeBounds['height'];
 	    shapeBounds['y'] = y;
 
 	    shape.bounds = shapeBounds
@@ -1177,27 +1597,17 @@ VerticalLayout.prototype.position = function(shapes, bounds, context) {
 	}
 
     } else {
-	console.log("VERTICALLY POSITIONING");
-	console.log("BOUNDS");
-	console.log(bounds);
 	y = bounds.y;
 	for(var i=0; i<shapes.length; i++) {
-	    console.log("SHAPE "+i);
+	    //console.log("SHAPE "+i);
 	    shape = shapes[i];
 	    shapeBounds = {};
 	    height = (shape.positionBindings['height'] || shape.positionBindings['size']);
-	    console.log("HEIGHT: "+height);
 	    shapeBounds['height'] = height || perElement;
-	    //if(this.opts['vertical-align'] !== 'top' && this.opts['vertical-align'] !== 'bottom')
-	    // 	y = y + ((perElement - shapeBounds['height']) / 2);
-	    shapeBounds['y'] = y;
 	    y = y + shapeBounds['height'];
-	    //if(this.opts['vertical-align'] !== 'top' && this.opts['vertical-align'] !== 'bottom')
-	    // 	y = y + ((perElement - shapeBounds['height']) / 2);
+	    shapeBounds['y'] = y;
 
 	    shape.bounds = shapeBounds;
-	    console.log("SHAPE BOUNDS");
-	    console.log(shape.bounds);
 	    acum.push(shape);
 	}
 
@@ -1208,11 +1618,17 @@ VerticalLayout.prototype.position = function(shapes, bounds, context) {
     for(i=0; i<acum.length; i++) {
 	shape = acum[i];
 	shape.bounds['width'] = shape.positionBindings['width'] || bounds.width;
+	//console.log("VERTICAL ALIGN X : "+shape.bounds['width']);
 	if(this.opts['align'] === 'right') {
 	    shape.bounds['x'] = x + (bounds.width - shape.bounds['width']);
-	} else if(this.opts['vertical-align'] === 'left') {
+	} else if(this.opts['align'] === 'left') {
 	    shape.bounds['x'] = x;
 	} else {
+	    //console.log("MIDDLE!");
+	    //console.log("X "+x);
+	    //console.log("BOUNDS WIDTH "+bounds.width);
+	    //console.log("SHAPE WIDTH "+shape.bounds['width']);
+	    //console.log("MARGIN "+((bounds.width - shape.bounds['width'])/2));
 	    shape.bounds['x'] = x + ((bounds.width - shape.bounds['width'])/2);
 	}
     }
@@ -1228,6 +1644,7 @@ VerticalLayout.prototype.rearrange = function(type, elements, struct, layer, con
 // Cartesian layout
 var CartesianLayout  = function(opts) {
     this.opts = opts;
+    this.scales = {};
 };
 // Registering the layout
 Layout.register('Cartesian', CartesianLayout);
@@ -1254,7 +1671,10 @@ CartesianLayout.prototype.buildScale = function(key, bounds, scale, shapes, grap
 	var rangeMin = scale['rangeMin'] || this.getRangeMin(key, bounds);
 	var rangeMax = scale['rangeMax'] || this.getRangeMax(key, bounds);
 
-	return new Scale['continous'](domainMax, domainMin, rangeMax, rangeMin);
+	scale = new Scale['continous'](domainMax, domainMin, rangeMax, rangeMin);
+	this.scales[prop] = scale;
+
+	return scale;
     } else if(scale['scale'] === 'gradient') {
 	var domainMin = scale['domainMin'] || null;
 	var domainMax = scale['domainMax'] || null;
@@ -1288,8 +1708,10 @@ CartesianLayout.prototype.buildScale = function(key, bounds, scale, shapes, grap
 	var rangeMin = scale['rangeMin'] || this.getRangeMin(key, bounds);
 	var rangeMax = scale['rangeMax'] || this.getRangeMax(key, bounds);
 
-	return new Scale['proportional'](acum, rangeMax, rangeMin);
+	scale =  new Scale['proportional'](acum, rangeMax, rangeMin);
+	this.scales[prop] = scale;
 
+	return scale;
     } else if(scale['scale'] === 'hue') {
 	prop = graph.rdf.resolve(prop) || prop;
 	var categoriesMapping = {};
@@ -1318,13 +1740,106 @@ CartesianLayout.prototype.getRangeMin = function(key, bounds) {
 CartesianLayout.prototype.getRangeMax = function(key, bounds) {
     if(key === 'height' || key === 'y') {
 	return bounds['y'] + bounds['height'];
-    } else if(key === 'width' || key === 'x') {
-	return bounds['x'] + bounds['width'];	    
+    } else if(key === 'width' || key === 'x' || key === 'size') {
+	return bounds['x'] + (bounds['width']||bounds['size']);	    
     }
 };
 
+CartesianLayout.prototype.reshapeForTheme = function(bounds, themeData) {
+    if(themeData.title) {
+	bounds['y'] = bounds['y'] + 40
+	if(bounds['height'] != null)
+	    bounds['height'] = bounds['height'] - 40;
+    }
+
+    if(themeData.axis) {
+	if(themeData.axis.x) {
+	    if(bounds['height'] != null)
+		bounds['height'] = bounds['height'] - 20;
+	}
+
+	if(themeData.axis.y) {
+	    bounds['x'] = bounds['x'] + 50;
+	    if(bounds['width'] != null)
+		bounds['width'] = bounds['width'] - 50;
+	}
+    }
+
+    return bounds;
+}
+
+CartesianLayout.prototype.renderTheme = function(doc, themeData) {
+    if(themeData != null) {
+	if(themeData.title != null); {
+	    doc = doc + "<text font-size=\"20\" text-anchor=\"middle\" x=\""+(themeData.width/2)+"\" y=\""+(themeData.y+20)+"\">"+(themeData.title.content || themeData.title)+"</text>";
+	}
+    }
+
+    var xScale,yScale;
+
+    if(themeData.axis) {
+	if(themeData.axis.x) {
+	    var scale = this.scales[themeData.axis.x];
+	    if(scale == null) {
+		throw("Cannot compute axis in theme because scale for property "+themeData.axis.x+" was not generated");
+	    } else {
+		var marks = scale.partition()
+	    }
+
+	    var y = (themeData['y']+themeData['height']-20);
+	    var x1 = (themeData['x']+50);
+	    var x2 = (themeData['x']+themeData['width']);
+	    doc = doc + "<line x1=\""+x1+"\" y1=\""+y+"\" x2=\""+x2+"\" y2=\""+y+"\" fill=\"none\" stroke=\"#000000\" stroke-width=\"1\"></line>";
+	    for(var i=0; i<marks.length; i++) {
+		var domain = marks[i].domain;
+		var range = marks[i].range;
+
+		var x = (themeData['x'] + range);
+		var y1 = (themeData['y']+themeData['height']-20);
+		var y2 = (themeData['y']+themeData['height']-20+5);
+
+		doc = doc + "<line x1=\""+x+"\" y1=\""+y1+"\" x2=\""+x+"\" y2=\""+y2+"\" fill=\"none\" stroke=\"black\" stroke-width=\"1\"></line>";
+		doc = doc + "<text font-size=\"10\" x=\""+x+"\" y=\""+(y2+10)+"\" text-anchor=\"middle\">"+domain.toFixed(2)+"</text>";
+	    }
+	}
+
+	if(themeData.axis.y) {
+	    var scale = this.scales[themeData.axis.y];
+	    if(scale == null) {
+		throw("Cannot compute axis in theme because scale for property "+themeData.axis.x+" was not generated");
+	    } else {
+		marks = scale.partition().reverse();
+	    }
+
+	    var xAxisOffset = 20;
+	    if(themeData.axis.x == null)
+		xAxisOffset = 0;
+
+	    y1 = (themeData['y']+40);
+	    y2 = (themeData['y']+themeData['height']-xAxisOffset);
+	    x = (themeData['x']+50);
+	    doc = doc + "<line x1=\""+x+"\" y1=\""+y1+"\" x2=\""+x+"\" y2=\""+y2+"\" fill=\"none\" stroke=\"#000000\" stroke-width=\"1\"></line>";
+	    for(var i=0; i<marks.length; i++) {
+		domain = marks[i].domain;
+		range = marks[i].range;
+
+		x1 = (themeData['x'] + 50);
+		x2 = (themeData['x'] + 50 - 5);
+		y = (themeData['y']+themeData['height']-xAxisOffset-range+40);
+
+		doc = doc + "<line x1=\""+x1+"\" y1=\""+y+"\" x2=\""+x2+"\" y2=\""+y+"\" fill=\"none\" stroke=\"black\" stroke-width=\"1\"></line>";
+		doc = doc + "<text font-size=\"10\" x=\""+(x2-30)+"\" y=\""+y+"\" text-anchor=\"middle\">"+domain.toFixed(2)+"</text>";
+	    }
+	}
+    }
+
+    return doc;
+};
+
+
 CartesianLayout.prototype.position = function(shapes, bounds, context) {
     shapes = shapes['nodes'];
+
     var perElement = bounds['width'] / shapes.length;
     var x,y,shape, shapeBounds, height, width;
     var acum = [];
@@ -1338,10 +1853,10 @@ CartesianLayout.prototype.position = function(shapes, bounds, context) {
 
 	shapeBounds['width'] = width || perElement;
 	shapeBounds['x'] = shape.positionBindings['x'];
-	if(shapeBounds['x'] == null) 
-	    throw "'x' position bindings must be provided in Cartesian layout";
-	else
-	    shapeBounds['x'] = x + shapeBounds['x'];
+	//if(shapeBounds['x'] == null) 
+	//    throw "'x' position bindings must be provided in Cartesian layout";
+	//else
+	//    shapeBounds['x'] = x + shapeBounds['x'];
 	shape.bounds = shapeBounds;
 	acum.push(shape);
     }
@@ -1355,7 +1870,7 @@ CartesianLayout.prototype.position = function(shapes, bounds, context) {
 	if(shape.bounds['y'] == null)
 	    throw "'y' position bindings must be provided in Cartesian layout";
 	else	    
-	    shape.bounds['y'] = y + (bounds.height - shape.bounds['height'] - shape.bounds['y']);
+	    shape.bounds['y'] = y + (y + bounds['height']) - (shape.bounds['y'] - shape.bounds['height']); // @todo  check this
     }
 
     return acum;
@@ -1556,8 +2071,8 @@ PolarLayout.prototype.position = function(shapes, bounds, context) {
 
     var current = 0,x1,y1,x2,y2, path, shapeRadius, currentRadius, offset;
     for(var i=0; i<shapes.length; i++) {
-	shape = shapes[i];
-	shapeBounds = {};
+	var shape = shapes[i];
+	var shapeBounds = {};
 	shape.properties['shape'] = 'path';
 
 	if(shape.positionBindings['offset'] == null) {
@@ -1610,8 +2125,8 @@ PolarLayout.prototype.position = function(shapes, bounds, context) {
 	    shapeRadius = shape.positionBindings['height'];
 	    //console.log("SHAPE RADIOUS "+shapeRadius);
 	    //console.log("CURRENT "+current);
-	    x01 = centerx + ( offset * Math.cos(current * Math.PI/180) );
-	    y01 = centery - ( offset * Math.sin(current * Math.PI/180) );
+	    var x01 = centerx + ( offset * Math.cos(current * Math.PI/180) );
+	    var y01 = centery - ( offset * Math.sin(current * Math.PI/180) );
 	    x1 = centerx + ( shapeRadius * Math.cos(current * Math.PI/180) );
 	    y1 = centery - ( shapeRadius * Math.sin(current * Math.PI/180) );
 
@@ -1624,8 +2139,8 @@ PolarLayout.prototype.position = function(shapes, bounds, context) {
 	    currentRadius = shape.positionBindings['width'] * degreesPerPixel
 	    current = current +  currentRadius;
 
-	    x02 = centerx + ( offset * Math.cos(current * Math.PI/180) );
-	    y02 = centery - ( offset * Math.sin(current * Math.PI/180) );
+	    var x02 = centerx + ( offset * Math.cos(current * Math.PI/180) );
+	    var y02 = centery - ( offset * Math.sin(current * Math.PI/180) );
 	    x2 = centerx + ( shapeRadius * Math.cos(current * Math.PI/180) );
 	    y2 = centery - ( shapeRadius * Math.sin(current * Math.PI/180) );
 
@@ -1675,18 +2190,18 @@ Layout.register('Force', ForceLayout);
 ForceLayout.prototype.buildScale = function(key, bounds, scale, shapes, graph) {
     var prop = scale['rdfProperty'];
     if(scale['scale'] === 'continous') {
-	console.log("PROPERTY ");
-	console.log(prop);
+	//console.log("PROPERTY ");
+	//console.log(prop);
 
 	var domainMin = scale['domainMin'] || null;
 	var domainMax = scale['domainMax'] || null;
 
 	if(domainMin === null | domainMax === null) {
-	    console.log("RESOLVING PROP");
-	    console.log(graph.rdf.resolve(prop));
+	    //console.log("RESOLVING PROP");
+	    //console.log(graph.rdf.resolve(prop));
 	    var maxMin = Utils.findMaxMin(Utils.map(shapes, function(shape){ return shape.rdfProps; }), (graph.rdf.resolve(prop) || prop));
-	    console.log("MAXMIN");
-	    console.log(maxMin);
+	    //console.log("MAXMIN");
+	    //console.log(maxMin);
 	    var domain = maxMin[0] - maxMin[1];
 	    var marks = domain / 4.0;
 	    if(maxMin[1] - marks < 0)
@@ -1708,15 +2223,15 @@ ForceLayout.prototype.buildScale = function(key, bounds, scale, shapes, graph) {
 	var rangeMin = scale['rangeMin'] || this.getRangeMin(key, bounds);
 	var rangeMax = scale['rangeMax'] || this.getRangeMax(key, bounds);
 
-	console.log("DOMAIN MIN ");
-	console.log(domainMin);
-	console.log("DOMAIN MAX ");
-	console.log(domainMax);
+	//console.log("DOMAIN MIN ");
+	//console.log(domainMin);
+	//console.log("DOMAIN MAX ");
+	//console.log(domainMax);
 
-	console.log("RANGE MIN ");
-	console.log(rangeMin);
-	console.log("RANGE MAX ");
-	console.log(rangeMax);
+	//console.log("RANGE MIN ");
+	//console.log(rangeMin);
+	//console.log("RANGE MAX ");
+	//console.log(rangeMax);
 
 	return new Scale['continous'](domainMax, domainMin, rangeMax, rangeMin);
 	
@@ -1743,23 +2258,23 @@ ForceLayout.prototype.buildScale = function(key, bounds, scale, shapes, graph) {
 	return new Scale['gradient'](domainMax, domainMin, rangeMax, rangeMin);
 
     } else if(scale['scale'] === 'proportional') {
-	console.log("PROPORTIONAL SCALE HORIZ");
+	//console.log("PROPORTIONAL SCALE HORIZ");
 	var acum = 0;
 
 	var rdfProperty = graph.rdf.resolve(prop) || prop;
-	console.log("PROPERTY: "+rdfProperty);
-	var values = Utils.map(shapes, function(shape){ console.log(rdfProperty); console.log(shape.rdfProps); return shape.rdfProps[rdfProperty]; });
-	console.log("VALUES");
-	console.log(values);
+	//console.log("PROPERTY: "+rdfProperty);
+	var values = Utils.map(shapes, function(shape){  return shape.rdfProps[rdfProperty]; });
+	//console.log("VALUES");
+	//console.log(values);
 	for(var i=0; i<values.length; i++)
 	    acum = acum + values[i];
 
 	var rangeMin = scale['rangeMin'] || this.getRangeMin(key, bounds);
 	var rangeMax = scale['rangeMax'] || this.getRangeMax(key, bounds);
 
-	console.log("ACUM "+acum);
-	console.log("RANGE MAX "+rangeMax);
-	console.log("RANGE MIN "+rangeMin);
+	//console.log("ACUM "+acum);
+	//console.log("RANGE MAX "+rangeMax);
+	//console.log("RANGE MIN "+rangeMin);
 	return new Scale['proportional'](acum, rangeMax, rangeMin);
 
     } else if(scale['scale'] === 'hue') {
@@ -1910,7 +2425,7 @@ ForceLayout.prototype.position = function(shapes, bounds, context) {
     _ForceDirected.prototype.point = function(node) {
 	if (typeof(this.nodePoints[node.id]) === 'undefined') {
 	    var mass = typeof(node.data.mass) !== 'undefined' ? node.data.mass : 1.0;
-	    console.log([this.centerx,this.centery]);
+	    //console.log([this.centerx,this.centery]);
 	    //this.nodePoints[node.id] = new _ForceDirected.Point(_Vector.random(this.centerx, this.centery), mass);
 	    this.nodePoints[node.id] = new _ForceDirected.Point(_Vector.random(), mass);
 	}
@@ -2086,16 +2601,16 @@ ForceLayout.prototype.position = function(shapes, bounds, context) {
 	    t.attractToCentre();
 	    t.updateVelocity(0.03);
 	    t.updatePosition(0.03);
-	    console.log(".");
+	    //console.log(".");
 	    t.eachNode(function(n,p) {
-		console.log(p);
+		//console.log(p);
 	    });
 	} while(t.totalEnergy() >= 0.01)
     };
 
 
     // Vector
-    _Vector = function(x, y) {
+    var _Vector = function(x, y) {
 	this.x = x;
 	this.y = y;
     };
@@ -2103,11 +2618,11 @@ ForceLayout.prototype.position = function(shapes, bounds, context) {
     _Vector.random = function(x, y) {
 	if(x != null && y!= null) {
 	    var v =  new _Vector(x+(10.0 * (Math.random() - 0.5)), y+(10.0 * (Math.random() - 0.5)));
-	    console.log("INIT");
-	    console.log(v);
+	    //console.log("INIT");
+	    //console.log(v);
 	    return v;
 	} else {
-	    console.log("INIT NULL");
+	    //console.log("INIT NULL");
 	    return new _Vector(10.0 * (Math.random() - 0.5), 10.0 * (Math.random() - 0.5));
 	}
     };
@@ -2169,8 +2684,8 @@ ForceLayout.prototype.position = function(shapes, bounds, context) {
 
     for(i=0; i<shapes.nodes.length; i++) {
 	node = shapes.nodes[i].graph;
-	console.log("MASS");
-	console.log(shapes.nodes[i].properties['mass']);
+	//console.log("MASS");
+	//console.log(shapes.nodes[i].properties['mass']);
 	node.mass = shapes.nodes[i].properties['mass'];
 	disambg[shapes.nodes[i].graph.nodeURI.value] = g.newNode(node);
 	shapesMapping[shapes.nodes[i].graph.nodeURI.value] = shapes.nodes[i];
@@ -2185,7 +2700,7 @@ ForceLayout.prototype.position = function(shapes, bounds, context) {
     var fd = new _ForceDirected(g, 5, 5, 0.1), shape;
 
     fd.start(bounds.x, bounds.y, bounds.width, bounds.height);
-    console.log("=============");
+    //console.log("=============");
     var wm = bounds.width/2;
     var hm = bounds.height/2;
     var topx = Math.ceil(Math.max(Math.abs(fd.MAX_X), Math.abs(fd.MIN_X)));
@@ -2200,20 +2715,20 @@ ForceLayout.prototype.position = function(shapes, bounds, context) {
 	shape = shapesMapping[n.data.nodeURI.value];
 	shape.bounds = {};
 
-	console.log(p.p);
+	//console.log(p.p);
 	var dx = Math.abs(p.p.x) / topx;
-	console.log("DX "+dx);
+	//console.log("DX "+dx);
 	dx = wm * dx;
-	console.log(dx);
+	//console.log(dx);
 	if(p.p.x < 0) 
 	    shape.bounds.x = bounds.x + wm - dx;
 	else
 	    shape.bounds.x = bounds.x + wm + dx;
 
 	var dy = Math.abs(p.p.y) / topy;
-	console.log("DY "+dy);
+	//console.log("DY "+dy);
 	dy = hm * dy;
-	console.log(dy);
+	//console.log(dy);
 	if(p.p.y < 0) 
 	    shape.bounds.y = bounds.y + hm - dy;
 	else
@@ -2229,11 +2744,11 @@ ForceLayout.prototype.position = function(shapes, bounds, context) {
 
     var edgeShape, uri;
     fd.eachEdge(function(edge, spring){
-	console.log("--");
-	console.log("FROM:");
-	console.log(screenPoints[edge.source.id]);
-	console.log("TO:");
-	console.log(screenPoints[edge.target.id]);
+	//console.log("--");
+	//console.log("FROM:");
+	//console.log(screenPoints[edge.source.id]);
+	//console.log("TO:");
+	//console.log(screenPoints[edge.target.id]);
 
 	uri = 'http://linkedvis.org/edges/from/'+edge.source.id+"/to/"+edge.target.id;
 
@@ -2251,8 +2766,8 @@ ForceLayout.prototype.position = function(shapes, bounds, context) {
 	//edge.data.properties['stroke'] = '#999999';
 	//edge.data.properties['stroke-width'] = 1;
 
-	console.log("ADDING EDGE");
-	console.log(edgeShape);
+	//console.log("ADDING EDGE");
+	//console.log(edgeShape);
 	edgeShapes.push(edgeShape);
     });
 
@@ -2288,7 +2803,11 @@ var List  = function() {
 List.prototype.execute = function(graph, cb) {
     var that = this;
     var resolved = [];
+
+    Counter.before('query');
     graph.execute(this.query, function(s,results) {
+	Counter.after();
+
 	if(s) {
 	    var acum = [];
 	    for(var i=0; i<results.length; i++)
@@ -2298,7 +2817,9 @@ List.prototype.execute = function(graph, cb) {
 		floop = arguments.callee;
 		var query = "CONSTRUCT { <"+acum[env._i].value+"> ?p ?o } WHERE { <"+acum[env._i].value+"> ?p ?o }";
 		setTimeout(function() {
+		    Counter.before('query');
 		    graph.execute(query, function(s, nodeGraph) {
+			Counter.after();
 			if(s) {
 			    nodeGraph.nodeURI = acum[env._i];
 			    nodeGraph.rdf = graph.rdf;
@@ -2354,6 +2875,21 @@ List.prototype.group = function(groupPredicate) {
 
 Struct.register('List', List);
 
+var Node = function() {
+    this.node = arguments[0];
+};
+
+Node.prototype.execute = function(graph, cb) {
+    cb(true,[this.node]);
+};
+
+Node.prototype.group = function(groupPredicate) {
+    this.groupPredicate = groupPredicate;
+    return this;
+};
+
+Struct.register('Node', Node);
+
 
 var Tree = function(spec) {
     this.spec = spec;
@@ -2389,20 +2925,23 @@ Tree.prototype.execute = function(graph, cb) {
 Tree.prototype.walkTree = function(t) {
     //console.log(t);
     for(var p in t.node) {
-	if(p.indexOf("lv:") !== -1)
-	    console.log("   - "+p+" -> "+t.node[p]);
+	if(p.indexOf("lv:") !== -1) {
+	    //console.log("   - "+p+" -> "+t.node[p]);	    
+	}
     }
     if(t.children) {
-	console.log("LEVEL "+t.label+" -> "+t.children.length+" children ");
-	console.log("ALL CHILDREN "+t.allChildren.length);
-	for(var i=0; i< t.allChildren.length; i++) 
-	    console.log(t.allChildren[i].nodeURI.value);
-	if(t.node['$type'] === 'group')
-	    console.log("NODE IS GROUP WITH "+t.node['lv:count']+" elements");
+	//console.log("LEVEL "+t.label+" -> "+t.children.length+" children ");
+	//console.log("ALL CHILDREN "+t.allChildren.length);
+	for(var i=0; i< t.allChildren.length; i++)  {
+	    //console.log(t.allChildren[i].nodeURI.value);
+	}
+	if(t.node['$type'] === 'group') {
+	    //console.log("NODE IS GROUP WITH "+t.node['lv:count']+" elements");
+	}
 	for(var i=0; i<t.children.length;i++)
 	    this.walkTree(t.children[i]);
     } else {
-	console.log("LEVEL "+t.label+" -> 0 children");
+	//console.log("LEVEL "+t.label+" -> 0 children");
     }
 }
 
@@ -2424,13 +2963,13 @@ Tree.countAllNodes = function(treeNode) {
 		current.allChildren = [].concat(current.node.nodes);
 		current.node['lv:label'] = current['label'];
 		if(current.children && current.children.length > 0) {
-		    console.log("FOUND NON PROCESSED GROUP");
+		    //console.log("FOUND NON PROCESSED GROUP");
 		    nextChild = current.children[current.processed];
 		    pending.push(current);
 		    pending.push(nextChild);
 		    current.node['lv:isLeaf'] = false;
 		} else {
-		    console.log("FOUND INNER NODE COMPLETED");
+		    //console.log("FOUND INNER NODE COMPLETED");
 		    current.node['lv:childrenCount'] = current.children.length;
 		    current.node['lv:isLeaf'] = false;
 		    current.allChildren = Utils.uniq(current.allChildren, function(v){ return v.nodeURI.value; });
@@ -2438,7 +2977,7 @@ Tree.countAllNodes = function(treeNode) {
 		    allChildren = current.allChildren;
 		}
 	    } else {
-		console.log("FOUND LEAF");
+		//console.log("FOUND LEAF");
 		current.node.processed = true;
 		current.node['lv:isLeaf'] = true;
 		current.node['lv:cumulativeCount'] = 1;
@@ -2450,13 +2989,13 @@ Tree.countAllNodes = function(treeNode) {
 	    current.allChildren = current.allChildren.concat(allChildren);
 	    current.processed++;
 	    if(current.processed <  current.children.length) {
-		console.log("FOUND INNER NODE BEING PROCESSED");
+		//console.log("FOUND INNER NODE BEING PROCESSED");
 		nextChild = current.children[current.processed];
 		allChildren = [];
 		pending.push(current);
 		pending.push(nextChild);
 	    } else {
-		console.log("FOUND INNER NODE COMPLETED");
+		//console.log("FOUND INNER NODE COMPLETED");
 		current.node['lv:childrenCount'] = current.children.length;
 		current.allChildren = Utils.uniq(current.allChildren, function(v){ return v.nodeURI.value; });
 		current.node['lv:cumulativeCount'] = current.allChildren.length;
@@ -2619,9 +3158,11 @@ Tree.prototype.processNode = function(spec, parent, graph, context, cb) {
     }
 
     var that = this;
-    console.log("QUERY");
-    console.log("SELECT * "+query);
+    //console.log("QUERY");
+    //console.log("SELECT * "+query);
+    Counter.before('query');
     graph.execute("SELECT * "+query, function(s, results) {
+	Counter.after();
 	//console.log("RESULT EXECUTE PROCESS NODE");
 	//console.log(s);
 	//console.log(results);
@@ -2650,7 +3191,9 @@ Tree.prototype.processNode = function(spec, parent, graph, context, cb) {
 			var query = "CONSTRUCT { <"+acum[env._i].value+"> ?p ?o } WHERE { <"+acum[env._i].value+"> ?p ?o }";
 			//console.log("CONSTRUCT QUERY "+query);
 			setTimeout(function() {
+			    Counter.before('query');
 			    graph.execute(query, function(s, nodeGraph) {
+				Counter.after();
 				if(s) {
 				    nodeGraph.nodeURI = acum[env._i];
 				    //console.log("SETTING THE NODEURI FOR "+acum[env._i].value);
@@ -2720,10 +3263,12 @@ var Graph  = function() {
 Graph.prototype.execute = function(graph, cb) {
     var that = this;
     var resolved = [], mass;
-    console.log("GRAPH QUERY");
-    console.log(this.query);
+    //console.log("GRAPH QUERY");
+    //console.log(this.query);
+    Counter.before('query');
     graph.execute(this.query, function(s,results) {
-	if(s) {
+	Counter.after();
+	if(s) {	    
 	    var mapping = {}, links, source, target, disambg = {};
 	    for(var i=0; i<results.length; i++) {
 		source = results[i].source.value;
@@ -2734,6 +3279,7 @@ Graph.prototype.execute = function(graph, cb) {
 		mass++;
 		links[target] = mass;
 		mapping[source] = links;
+
 		disambg[source] = results[i].source;
 		disambg[target] = results[i].target;
 	    }
@@ -2744,12 +3290,15 @@ Graph.prototype.execute = function(graph, cb) {
 		
 
 	    Utils.repeat(0, acum.length, function(k,env) {
-		floop = arguments.callee;
+		var floop = arguments.callee;
 		var query = "CONSTRUCT { <"+acum[env._i].value+"> ?p ?o } WHERE { <"+acum[env._i].value+"> ?p ?o }";
 		setTimeout(function() {
+		    Counter.before('query');
 		    graph.execute(query, function(s, nodeGraph) {
+			Counter.after();
 			if(s) {
 			    nodeGraph['$type'] = 'graphnode';
+			    nodeGraph['lv:RDFType'] = acum[env._i].token;
 			    nodeGraph.nodeURI = acum[env._i];
 			    nodeGraph.rdf = graph.rdf;
 			    disambg[acum[env._i].value] = nodeGraph;
@@ -2759,11 +3308,22 @@ Graph.prototype.execute = function(graph, cb) {
 		},0);
 	    }, function() {
 		var nodesAcum = [], node, linksAcum = [];
+		var finalDisambg = {};
+
 		for(var uri in mapping) {
 		    node = disambg[uri];
-		    nodesAcum.push(node);
-		    for(targetUri in mapping[uri]) 
+		    if(finalDisambg[uri] == null) {
+			nodesAcum.push(node);
+			finalDisambg[uri] = true;
+		    }
+
+		    for(targetUri in mapping[uri])  {
+			if(finalDisambg[targetUri] == null) {
+			    nodesAcum.push(disambg[targetUri]);
+			    finalDisambg[targetUri] = true;
+			}
 			linksAcum.push({source: node, target: disambg[targetUri], '$type': 'graphedge', mass: mapping[uri][targetUri]});
+		    }
 		}
 		cb(true, {'nodes': nodesAcum, 'edges': linksAcum});
 	    });
@@ -2795,6 +3355,10 @@ var LinkedVis = function(opts) {
     if(this.bounds['width'] == null || this.bounds['height'] == null)
 	throw("Error bounds, missing width or height");
 
+    this.canvasBounds = {};
+    for(var p in this.bounds)
+	this.canvasBounds[p] = this.bounds[p];
+
     this.layers = [];
     
     // TODO: check this
@@ -2803,6 +3367,8 @@ var LinkedVis = function(opts) {
     // 	that.graph = store;
     //});
 };
+
+LinkedVis.PREFIX = "http://linkedvis.org/voab/";
 
 LinkedVis.prototype.from = function() {
     if(arguments.length === 1) {
@@ -2816,12 +3382,14 @@ LinkedVis.prototype.from = function() {
     this.datagraph = rdfstore.create();
 
     this.context = {
-	metagraph: this.metagraph,
-	graph: this.graph,
-	datagraph: this.datagraph,
-	idGen: 0,
-	totalLayers: 0,
-	layerCounter: {}
+	metagraph:    this.metagraph,
+	graph:        this.graph,
+	datagraph:    this.datagraph,
+	idGen:        0,
+	totalLayers:  0,
+	layerCounter: {},
+	shapesMap:    {},
+	layersMap:    {}
     };
 
     return this;
@@ -2849,6 +3417,10 @@ LinkedVis.Horizontal = function(opts) {
 	return Layout.build('Horizontal', opts);
 };
 
+LinkedVis.Vertical = function(opts) {
+	return Layout.build('Vertical', opts);
+};
+
 LinkedVis.Cartesian = function(opts) {
 	return Layout.build('Cartesian', opts);
 };
@@ -2872,8 +3444,22 @@ LinkedVis.prototype.stackLayer = function(cb) {
     return this;
 };
 
-LinkedVis.prototype.render = function(cb) {
+LinkedVis.prototype.render = function() {
+    Counter.reset();
+    Counter.totalBefore();
+
     var that = this;
+    var cb, domID=null;
+    if(arguments.length === 1) {
+	if(typeof(arguments[0]) === 'function') {
+	    cb = arguments[0];
+	} else {
+	    domID = arguments[0];
+	}
+    } else if(arguments > 1) {
+	domID = arguments[0];
+	cb = arguments[1];
+    }
 
     Utils.repeat(0, this.layers.length, function(k,env) {
 	var floop = arguments.callee;
@@ -2882,11 +3468,52 @@ LinkedVis.prototype.render = function(cb) {
 	    k(floop,env);
 	});
     }, function(env) {
-	cb(true,env.doc+"</svg>");
+	Counter.before('query');
+	that.context.datagraph.execute("CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }", function(s,g) {
+	    Counter.after();
+	    env.doc = env.doc + "<meta><lv:datagraph format='text/n3'>"+Utils.htmlEncode(g.toNT())+"</lv:datagraph></meta>";
+
+	    var doc = "<svg xmlns='http://www.w3.org/2000/svg' version='1.1' xmlns:lv='http://linkedvis.org/vocab/' x='"+that.canvasBounds['x']+
+		"' y='"+that.canvasBounds['y']+"' width='"+that.canvasBounds['width']+
+		"' height='"+that.canvasBounds['height']+"'>"+env.doc+"</svg>";
+	    that.rendered = doc;
+
+	    if(domID === null) {
+		Counter.totalAfter();
+		// return SVG string without inserting it in the DOM
+		console.log("TOTAL TIME:");
+		console.log(Counter.total());
+		Counter.reset();
+
+		if(cb)
+		    cb(true,doc, that);
+	    } else {
+		// Insert into the DOM
+		var nodes = Sizzle(domID);
+		if(nodes.length === 0) 
+		    cb(false, "Cannnot find provided DOM element to append the data visualization");
+		else {
+		    Counter.before('rendering');
+		    var svgElem = new DOMParser().parseFromString(that.rendered, "image/svg+xml");
+
+		    nodes[0].appendChild(nodes[0].ownerDocument.importNode(svgElem.documentElement, true));
+		    Counter.after();
+		    Counter.totalAfter();		    
+
+		    console.log("TOTAL TIME:");
+		    console.log(Counter.total());
+		    Counter.reset();
+		    LinkedVis.load(domID, function(g) {
+			that.metagraph = g;
+			if(cb)
+			    cb(true, svgElem, that);
+		    });
+		}
+		
+	    }
+	});
     },
-    {doc: "<svg xmlns='http://www.w3.org/2000/svg' version='1.1' x='"+that.bounds['x']+
-          "' y='"+that.bounds['y']+"' width='"+that.bounds['width']+
-          "' height='"+that.bounds['height']+"'>"});
+    {doc: ""});
     return this;
 };
 
@@ -2925,6 +3552,55 @@ LinkedVis.shrink = function(uri, namespaces) {
 	namespaces["ns"+counter] = ns;
 	return "ns"+counter+":"+suffix;
     }
+};
+
+
+/**
+ *
+ * DOM interaction
+ *
+ */
+
+LinkedVis.load = function(selector, cb) {
+    // load metagraph
+    var format, metagraph, metagraphs = Sizzle(selector+" meta metagraph");
+    var datagraphs = Sizzle(selector+" meta datagraph") || [];
+    var toLoad = datagraphs.concat(metagraphs);
+    rdfstore.create(function(g) {
+	g.registerDefaultProfileNamespaces();
+	g.registerDefaultNamespace("lv","http://www.linkedvis.org/vocab/");
+	Utils.repeat(0, toLoad.length, function(k, env) {
+	    var floop = arguments.callee;
+	    metagraph = toLoad[env._i];
+	    format = metagraph.getAttribute("format") || "text/n3";
+	    g.load(format, metagraph.textContent, function(s,l) {
+		k(floop, env);
+	    });
+	}, function() {
+	    cb(g);
+	});
+    });
+};
+
+LinkedVis.prototype.select = function(query, cb) {
+    var that = this;
+    that.metagraph.execute("SELECT * "+query, function(s,r) {
+	if(s){
+	    var acum = [], value;
+	    for(var i=0; i<r.length; i++){
+		if(r[i]['shape'] != null) {
+		    value = that.context.shapesMap[r[i]['shape'].value] || that.context.shapesMap[r[i]['shape'].value.split("http://linkedvis.org/ids#")[1]];
+		} else if(r[i]['layer'] != null) {
+		    value = that.context.layersMap[r[i]['layer'].value] || that.context.shapesMap[r[i]['layer'].value.split("http://linkedvis.org/ids#")[1]];
+		}
+		if(value != null)
+		    acum.push(value);
+	    }
+
+	    for(var i=0; i<acum.length; i++)
+		cb(acum[i]);
+	}
+    });
 };
 
 // just to test in node.js
